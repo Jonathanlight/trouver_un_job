@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "TrouverUnJob",
-  "version": "1.0.0",
-  "description": "Analysez les offres d'emploi, détectez les arnaques et évaluez les salaires du marché sur Indeed, LinkedIn, HelloWork et WTTJ",
+  "version": "1.2.0",
+  "description": "Analysez les offres d'emploi, détectez les arnaques et évaluez les salaires du marché sur Indeed, LinkedIn, HelloWork et WTTJ. Détection renforcée sur HelloWork et analyse de la légitimité des entreprises.",
   "browser_specific_settings": {
     "gecko": {
       "id": "trouverunjob@extension.firefox",

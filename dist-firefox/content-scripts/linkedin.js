@@ -34,6 +34,18 @@
   let processedElements = new WeakSet();
   let retryCount = 0;
   const MAX_RETRIES = 10;
+  let lastAnalysis = null;
+
+  // Message listener pour le popup
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'getCurrentJobAnalysis') {
+      sendResponse({
+        success: !!lastAnalysis,
+        analysis: lastAnalysis
+      });
+    }
+    return true;
+  });
 
   const StatsTracker = {
     pending: { analyzed: 0, flagged: 0, critical: 0 },
@@ -158,6 +170,37 @@
       return /cabinet\s*(?:de\s*)?recrutement|staffing|recruiting|headhunt|talent\s*acquisition|michael\s*page|hays|randstad|manpower|adecco|robert\s*half|korn\s*ferry/i.test(text);
     },
 
+    // Détecter si l'offre est republiée
+    isReposted(text) {
+      return /reposted|republiée/i.test(text);
+    },
+
+    // Extraire le nombre de jours depuis publication
+    extractPostedDaysAgo(text) {
+      // Format: "Posted X days ago", "Il y a X jours"
+      let match = text.match(/(?:posted|publiée?)\s*(\d+)\s*(?:days?|jours?)\s*ago/i);
+      if (match) return parseInt(match[1]);
+
+      match = text.match(/il\s*y\s*a\s*(\d+)\s*(?:jours?|semaines?)/i);
+      if (match) {
+        const num = parseInt(match[1]);
+        return /semaines?/i.test(match[0]) ? num * 7 : num;
+      }
+
+      // "Just now", "Aujourd'hui"
+      if (/just\s*now|aujourd'?hui|today/i.test(text)) return 0;
+
+      // "X weeks ago"
+      match = text.match(/(\d+)\s*weeks?\s*ago/i);
+      if (match) return parseInt(match[1]) * 7;
+
+      // "X months ago"
+      match = text.match(/(\d+)\s*months?\s*ago/i);
+      if (match) return parseInt(match[1]) * 30;
+
+      return null;
+    },
+
     // Détecter le secteur d'activité
     extractSector(text) {
       const sectors = [
@@ -185,19 +228,34 @@
       if (/startup|small\s*company/i.test(text)) return 50;
       if (/large\s*company|grande\s*entreprise/i.test(text)) return 1000;
       return null;
+    },
+
+    // Extraire le nombre de candidats
+    extractApplicantCount(text) {
+      // Format: "X applicants" ou "X candidats" ou "Over X applicants"
+      let match = text.match(/(?:over\s+)?(\d+)\s*(?:applicants?|candidat(?:ure)?s?)/i);
+      if (match) return parseInt(match[1]);
+
+      // Format: "X personnes ont postulé"
+      match = text.match(/(\d+)\s*personnes?\s*(?:ont\s*)?postulé/i);
+      if (match) return parseInt(match[1]);
+
+      // Format avec virgule "1,234 applicants"
+      match = text.match(/(\d{1,3}(?:,\d{3})*)\s*(?:applicants?|candidat(?:ure)?s?)/i);
+      if (match) return parseInt(match[1].replace(/,/g, ''));
+
+      return null;
     }
   };
 
   // ============================================================================
-  // UI - Safe DOM manipulation (no innerHTML)
+  // UI
   // ============================================================================
-
-  const DOM = window.FJD_DOM;
 
   const UI = {
     createBadge(result) {
-      const cls = result.classification;
       const badge = document.createElement('div');
+      const cls = result.classification;
       badge.className = 'fjd-badge';
       badge.style.cssText = `
         display: inline-flex; align-items: center; gap: 4px;
@@ -208,16 +266,10 @@
         box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         transition: all 0.2s ease; z-index: 100;
       `;
-
-      const labelSpan = document.createElement('span');
-      labelSpan.textContent = cls.label;
-
-      const scoreSpan = document.createElement('span');
-      scoreSpan.style.cssText = `background: ${cls.color}25; padding: 2px 5px; border-radius: 8px; font-weight: 700;`;
-      scoreSpan.textContent = result.pertinenceScore + '%';
-
-      badge.appendChild(labelSpan);
-      badge.appendChild(scoreSpan);
+      badge.innerHTML = `
+        <span>${cls.label}</span>
+        <span style="background: ${cls.color}25; padding: 2px 5px; border-radius: 8px; font-weight: 700;">${result.pertinenceScore}%</span>
+      `;
       badge.title = 'Cliquez pour les détails';
       badge.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this.showPanel(result); });
       return badge;
@@ -266,320 +318,174 @@
         'presentiel': 'Sur site'
       };
 
+      // Analyse des débouchés et reconversions
       const CareerPathways = window.FJD_CareerPathways;
       const careerData = CareerPathways ? CareerPathways.analyze(result.jobTitle || '') : { debouches: [], reconversion: [] };
 
-      // Build header
-      const header = document.createElement('header');
-      header.style.cssText = `background: linear-gradient(135deg, ${cls.bgColor} 0%, ${cls.color}15 100%); padding: 18px 20px; border-bottom: 1px solid ${cls.color}30; flex-shrink: 0; border-radius: 12px 12px 0 0;`;
+      panel.innerHTML = `
+        <header style="background: linear-gradient(135deg, ${cls.bgColor} 0%, ${cls.color}15 100%); padding: 18px 20px; border-bottom: 1px solid ${cls.color}30; flex-shrink: 0; border-radius: 12px 12px 0 0;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <div id="fjd-panel-title" style="font-size: 28px; font-weight: 700; color: ${cls.color};" role="status" aria-live="polite">${result.pertinenceScore}%</div>
+              <div style="font-size: 14px; color: ${cls.color}; font-weight: 500;">${cls.label}</div>
+            </div>
+            <button class="fjd-close" aria-label="Fermer le panneau" style="background: none; border: none; font-size: 26px; cursor: pointer; color: #475569; padding: 8px; border-radius: 6px; transition: background 0.2s;">&times;</button>
+          </div>
+          ${result.jobTitle ? `
+            <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid ${cls.color}25;">
+              <h2 style="font-size: 16px; font-weight: 600; color: #1e293b; margin: 0; line-height: 1.4;">${result.jobTitle}</h2>
+              ${result.company ? `<p style="font-size: 13px; color: #64748b; margin: 4px 0 0 0;">${result.company}</p>` : ''}
+            </div>
+          ` : ''}
+        </header>
 
-      const headerRow = DOM.div('display: flex; justify-content: space-between; align-items: center;');
+        <main style="padding: 18px 20px; overflow-y: auto; flex: 1; min-height: 0;">
+          <section aria-label="Analyse du profil" style="background: #f8fafc; border-radius: 8px; padding: 14px; margin-bottom: 18px;">
+            <h3 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 10px 0;">Analyse du profil</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
+              <div><span style="color: #64748b;">Diplôme:</span> <strong style="color: #1e293b;">${d.diploma ? diplomaLabels[d.diploma] : 'Non précisé'}</strong></div>
+              <div><span style="color: #64748b;">Expérience:</span> <strong style="color: #1e293b;">${d.experience !== null ? d.experience + ' an' + (d.experience > 1 ? 's' : '') : 'Non précisé'}</strong></div>
+              <div><span style="color: #64748b;">Contrat:</span> <strong style="color: #1e293b;">${extra.contractType || '-'}</strong></div>
+              <div><span style="color: #64748b;">Localisation:</span> <strong style="color: #1e293b;">${d.location || '-'}</strong></div>
+            </div>
+            ${extra.remoteWork ? `<div style="margin-top: 8px;"><span style="color: #64748b; font-size: 13px;">Mode:</span> <strong style="color: #0d9488; font-size: 13px;">${remoteLabels[extra.remoteWork] || extra.remoteWork}</strong></div>` : ''}
+            ${extra.companySize ? `<div style="margin-top: 8px;"><span style="color: #64748b; font-size: 13px;">Taille:</span> <strong style="color: #1e293b; font-size: 13px;">${extra.companySize.toLocaleString()} collaborateurs</strong></div>` : ''}
+            ${extra.isAgency ? `<div role="status" style="margin-top: 8px; padding: 6px 10px; background: #fef3c7; border-radius: 4px; font-size: 12px; color: #92400e; font-weight: 500;">Cabinet de recrutement</div>` : ''}
+            ${d.salary ? `
+              <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0;">
+                <span style="color: #64748b; font-size: 13px;">Salaire:</span>
+                <strong style="color: #1e293b; font-size: 13px;">${Math.round(d.salary.min/1000)}k - ${Math.round(d.salary.max/1000)}k€/an</strong>
+                ${s.market.expected ? `<span style="color: #64748b; font-size: 12px;"> (attendu: ${Math.round(s.market.expected.min/1000)}k-${Math.round(s.market.expected.max/1000)}k€)</span>` : ''}
+              </div>
+            ` : '<div role="alert" style="margin-top: 10px; padding: 6px 10px; background: #fef2f2; border-radius: 4px; font-size: 12px; color: #dc2626; font-weight: 500;">Salaire non communiqué</div>'}
+          </section>
 
-      const scoreDiv = document.createElement('div');
-      const scoreTitle = document.createElement('div');
-      scoreTitle.id = 'fjd-panel-title';
-      scoreTitle.style.cssText = `font-size: 28px; font-weight: 700; color: ${cls.color};`;
-      scoreTitle.setAttribute('role', 'status');
-      scoreTitle.setAttribute('aria-live', 'polite');
-      scoreTitle.textContent = result.pertinenceScore + '%';
+          <section aria-label="Scores par critère" style="margin-bottom: 18px;">
+            <h3 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 12px 0;">Scores par critère</h3>
+            ${[
+              { name: 'Légitimité', score: s.legitimacy.score, desc: 'Authenticité' },
+              { name: 'Marché', score: s.market.score, desc: 'Salaire vs marché' },
+              { name: 'Qualité', score: s.quality.score, desc: 'Rédaction' },
+              { name: 'Profil', score: s.profile.score, desc: 'Diplôme/exp' },
+              { name: 'Cohérence', score: s.coherence.score, desc: 'Logique' }
+            ].map(item => {
+              const col = item.score >= 70 ? '#16a34a' : item.score >= 50 ? '#ca8a04' : '#dc2626';
+              return `
+                <div style="margin-bottom: 8px;">
+                  <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px;">
+                    <span style="color: #334155;">${item.name} <span style="color: #64748b;">(${item.desc})</span></span>
+                    <span style="color: ${col}; font-weight: 600;">${item.score}%</span>
+                  </div>
+                  <div style="height: 6px; background: #e2e8f0; border-radius: 3px;" role="meter" aria-valuenow="${item.score}" aria-valuemin="0" aria-valuemax="100" aria-label="${item.name}">
+                    <div style="width: ${item.score}%; height: 100%; background: ${col}; border-radius: 3px; transition: width 0.3s ease;"></div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </section>
 
-      const scoreLabel = document.createElement('div');
-      scoreLabel.style.cssText = `font-size: 14px; color: ${cls.color}; font-weight: 500;`;
-      scoreLabel.textContent = cls.label;
+          ${s.market.details.length > 0 ? `
+            <section aria-label="Analyse salariale" style="margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 8px 0;">Analyse salariale</h4>
+              <ul style="font-size: 13px; color: #64748b; margin: 0; padding-left: 18px; line-height: 1.6;">${s.market.details.map(det => `<li>${det}</li>`).join('')}</ul>
+            </section>
+          ` : ''}
 
-      scoreDiv.appendChild(scoreTitle);
-      scoreDiv.appendChild(scoreLabel);
+          ${result.signals.greenFlags.length > 0 ? `
+            <section aria-label="Points positifs" style="background: #f0fdf4; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #166534; margin: 0 0 8px 0;">Points positifs (${result.signals.greenFlags.length})</h4>
+              <div style="font-size: 13px; color: #15803d; line-height: 1.6;">
+                ${result.signals.greenFlags.slice(0, 6).map(f => `<span style="display: inline-block; background: #dcfce7; padding: 4px 8px; border-radius: 4px; margin: 3px 6px 3px 0;">${f.label}</span>`).join('')}
+              </div>
+            </section>
+          ` : ''}
 
-      const closeBtn = document.createElement('button');
-      closeBtn.className = 'fjd-close';
-      closeBtn.setAttribute('aria-label', 'Fermer le panneau');
-      closeBtn.style.cssText = 'background: none; border: none; font-size: 26px; cursor: pointer; color: #475569; padding: 8px; border-radius: 6px; transition: background 0.2s;';
-      closeBtn.textContent = '\u00D7';
+          ${result.signals.redFlags.length > 0 ? `
+            <section aria-label="Alertes" role="alert" style="background: #fef2f2; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #991b1b; margin: 0 0 8px 0;">Alertes (${result.signals.redFlags.length})</h4>
+              <ul style="font-size: 13px; color: #dc2626; margin: 0; padding-left: 18px; line-height: 1.6;">${result.signals.redFlags.slice(0, 5).map(f => `<li>${f.label}</li>`).join('')}</ul>
+            </section>
+          ` : ''}
 
-      headerRow.appendChild(scoreDiv);
-      headerRow.appendChild(closeBtn);
-      header.appendChild(headerRow);
+          ${result.signals.warnings.length > 0 ? `
+            <section aria-label="Points d'attention" style="background: #fffbeb; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #92400e; margin: 0 0 8px 0;">Points d'attention</h4>
+              <ul style="font-size: 13px; color: #b45309; margin: 0; padding-left: 18px; line-height: 1.6;">${result.signals.warnings.slice(0, 4).map(w => `<li>${w}</li>`).join('')}</ul>
+            </section>
+          ` : ''}
 
-      if (result.jobTitle) {
-        const jobInfo = document.createElement('div');
-        jobInfo.style.cssText = `margin-top: 14px; padding-top: 14px; border-top: 1px solid ${cls.color}25;`;
+          ${result.recommendations.length > 0 ? `
+            <section aria-label="Recommandations" style="background: #eff6ff; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #1e40af; margin: 0 0 8px 0;">Recommandations</h4>
+              <ul style="font-size: 13px; color: #2563eb; margin: 0; padding-left: 18px; line-height: 1.6;">${result.recommendations.map(r => `<li>${r}</li>`).join('')}</ul>
+            </section>
+          ` : ''}
 
-        const jobTitle = document.createElement('h2');
-        jobTitle.style.cssText = 'font-size: 16px; font-weight: 600; color: #1e293b; margin: 0; line-height: 1.4;';
-        jobTitle.textContent = result.jobTitle;
-        jobInfo.appendChild(jobTitle);
+          ${careerData.debouches && careerData.debouches.length > 0 ? `
+            <section aria-label="Évolutions de carrière" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-radius: 8px; padding: 14px; margin-bottom: 14px; border: 1px solid #a7f3d0;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #059669; margin: 0 0 10px 0;">
+                Évolutions de carrière possibles
+              </h4>
+              <ul style="list-style: none; margin: 0; padding: 0; font-size: 13px; color: #047857;">
+                ${careerData.debouches.map(deb => `
+                  <li style="margin-bottom: 8px; padding-left: 14px; border-left: 3px solid #10b981;">
+                    <strong style="display: block; color: #065f46;">${deb.title}</strong>
+                    <span style="font-size: 12px; color: #059669;">${deb.years} • ${deb.desc}</span>
+                  </li>
+                `).join('')}
+              </ul>
+            </section>
+          ` : ''}
 
-        if (result.company) {
-          const companyP = document.createElement('p');
-          companyP.style.cssText = 'font-size: 13px; color: #64748b; margin: 4px 0 0 0;';
-          companyP.textContent = result.company;
-          jobInfo.appendChild(companyP);
-        }
-        header.appendChild(jobInfo);
-      }
+          ${careerData.reconversion && careerData.reconversion.length > 0 ? `
+            <section aria-label="Pistes de reconversion" style="background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%); border-radius: 8px; padding: 14px; margin-bottom: 14px; border: 1px solid #c4b5fd;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #7c3aed; margin: 0 0 10px 0;">
+                Pistes de reconversion
+              </h4>
+              <ul style="list-style: none; margin: 0; padding: 0; font-size: 13px; color: #6d28d9;">
+                ${careerData.reconversion.map(r => `
+                  <li style="margin-bottom: 8px; padding-left: 14px; border-left: 3px solid #8b5cf6;">
+                    <strong style="display: block; color: #5b21b6;">${r.title}</strong>
+                    <span style="font-size: 12px; color: #7c3aed;">${r.desc}</span>
+                  </li>
+                `).join('')}
+              </ul>
+            </section>
+          ` : ''}
 
-      panel.appendChild(header);
+          <div id="fjd-salary-analysis-container"></div>
+          ${d.salary && SalaryAnalyzer ? `
+            <button id="fjd-salary-toggle" class="fjd-salary-toggle" aria-expanded="false" style="
+              margin-top: 14px; width: 100%; padding: 12px 18px;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              color: white; border: none; border-radius: 8px;
+              font-size: 14px; font-weight: 600; cursor: pointer;
+              transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+            ">
+              Voir l'analyse salariale complète
+            </button>
+          ` : ''}
+        </main>
+      `;
 
-      // Build main content
-      const main = document.createElement('main');
-      main.style.cssText = 'padding: 18px 20px; overflow-y: auto; flex: 1; min-height: 0;';
+      document.body.appendChild(panel);
+      const closeBtn = panel.querySelector('.fjd-close');
+      closeBtn.onclick = () => this.closePanel();
+      closeBtn.onmouseenter = () => { closeBtn.style.background = '#f1f5f9'; };
+      closeBtn.onmouseleave = () => { closeBtn.style.background = 'none'; };
+      closeBtn.focus();
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.closePanel(); }, { once: true });
 
-      // Profile section
-      const profileSection = document.createElement('section');
-      profileSection.setAttribute('aria-label', 'Analyse du profil');
-      profileSection.style.cssText = 'background: #f8fafc; border-radius: 8px; padding: 14px; margin-bottom: 18px;';
-
-      const profileHeader = document.createElement('h3');
-      profileHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 10px 0;';
-      profileHeader.textContent = 'Analyse du profil';
-      profileSection.appendChild(profileHeader);
-
-      const profileGrid = DOM.div('display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;');
-      profileGrid.appendChild(DOM.keyValue('Diplôme', d.diploma ? diplomaLabels[d.diploma] : 'Non précisé'));
-      profileGrid.appendChild(DOM.keyValue('Expérience', d.experience !== null ? d.experience + ' an' + (d.experience > 1 ? 's' : '') : 'Non précisé'));
-      profileGrid.appendChild(DOM.keyValue('Contrat', extra.contractType || '-'));
-      profileGrid.appendChild(DOM.keyValue('Localisation', d.location || '-'));
-      profileSection.appendChild(profileGrid);
-
-      if (extra.remoteWork) {
-        const remoteDiv = document.createElement('div');
-        remoteDiv.style.cssText = 'margin-top: 8px;';
-        const remoteLabel = DOM.span('Mode: ', 'color: #64748b; font-size: 13px;');
-        const remoteValue = document.createElement('strong');
-        remoteValue.style.cssText = 'color: #0d9488; font-size: 13px;';
-        remoteValue.textContent = remoteLabels[extra.remoteWork] || extra.remoteWork;
-        remoteDiv.appendChild(remoteLabel);
-        remoteDiv.appendChild(remoteValue);
-        profileSection.appendChild(remoteDiv);
-      }
-
-      if (extra.companySize) {
-        const sizeDiv = document.createElement('div');
-        sizeDiv.style.cssText = 'margin-top: 8px;';
-        const sizeLabel = DOM.span('Taille: ', 'color: #64748b; font-size: 13px;');
-        const sizeValue = document.createElement('strong');
-        sizeValue.style.cssText = 'color: #1e293b; font-size: 13px;';
-        sizeValue.textContent = extra.companySize.toLocaleString() + ' collaborateurs';
-        sizeDiv.appendChild(sizeLabel);
-        sizeDiv.appendChild(sizeValue);
-        profileSection.appendChild(sizeDiv);
-      }
-
-      if (extra.isAgency) {
-        const agencyDiv = document.createElement('div');
-        agencyDiv.setAttribute('role', 'status');
-        agencyDiv.style.cssText = 'margin-top: 8px; padding: 6px 10px; background: #fef3c7; border-radius: 4px; font-size: 12px; color: #92400e; font-weight: 500;';
-        agencyDiv.textContent = 'Cabinet de recrutement';
-        profileSection.appendChild(agencyDiv);
-      }
-
-      if (d.salary) {
-        const salaryDiv = document.createElement('div');
-        salaryDiv.style.cssText = 'margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0;';
-        const salaryLabel = DOM.span('Salaire: ', 'color: #64748b; font-size: 13px;');
-        const salaryValue = document.createElement('strong');
-        salaryValue.style.cssText = 'color: #1e293b; font-size: 13px;';
-        salaryValue.textContent = Math.round(d.salary.min/1000) + 'k - ' + Math.round(d.salary.max/1000) + 'k€/an';
-        salaryDiv.appendChild(salaryLabel);
-        salaryDiv.appendChild(salaryValue);
-        if (s.market.expected) {
-          const expectedSpan = DOM.span(' (attendu: ' + Math.round(s.market.expected.min/1000) + 'k-' + Math.round(s.market.expected.max/1000) + 'k€)', 'color: #64748b; font-size: 12px;');
-          salaryDiv.appendChild(expectedSpan);
-        }
-        profileSection.appendChild(salaryDiv);
-      } else {
-        const noSalaryDiv = document.createElement('div');
-        noSalaryDiv.setAttribute('role', 'alert');
-        noSalaryDiv.style.cssText = 'margin-top: 10px; padding: 6px 10px; background: #fef2f2; border-radius: 4px; font-size: 12px; color: #dc2626; font-weight: 500;';
-        noSalaryDiv.textContent = 'Salaire non communiqué';
-        profileSection.appendChild(noSalaryDiv);
-      }
-
-      main.appendChild(profileSection);
-
-      // Scores section
-      const scoresSection = document.createElement('section');
-      scoresSection.setAttribute('aria-label', 'Scores par critère');
-      scoresSection.style.cssText = 'margin-bottom: 18px;';
-
-      const scoresHeader = document.createElement('h3');
-      scoresHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 12px 0;';
-      scoresHeader.textContent = 'Scores par critère';
-      scoresSection.appendChild(scoresHeader);
-
-      const scoreItems = [
-        { name: 'Légitimité', score: s.legitimacy.score, desc: 'Authenticité' },
-        { name: 'Marché', score: s.market.score, desc: 'Salaire vs marché' },
-        { name: 'Qualité', score: s.quality.score, desc: 'Rédaction' },
-        { name: 'Profil', score: s.profile.score, desc: 'Diplôme/exp' },
-        { name: 'Cohérence', score: s.coherence.score, desc: 'Logique' }
-      ];
-
-      scoreItems.forEach(item => {
-        const col = item.score >= 70 ? '#16a34a' : item.score >= 50 ? '#ca8a04' : '#dc2626';
-        const labelText = item.name + ' (' + item.desc + ')';
-        scoresSection.appendChild(DOM.progressBar(item.score, col, labelText));
-      });
-
-      main.appendChild(scoresSection);
-
-      // Market details
-      if (s.market.details.length > 0) {
-        const marketSection = document.createElement('section');
-        marketSection.setAttribute('aria-label', 'Analyse salariale');
-        marketSection.style.cssText = 'margin-bottom: 14px;';
-        const marketHeader = document.createElement('h4');
-        marketHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 8px 0;';
-        marketHeader.textContent = 'Analyse salariale';
-        marketSection.appendChild(marketHeader);
-        marketSection.appendChild(DOM.ul(s.market.details, 'font-size: 13px; color: #64748b; margin: 0; padding-left: 18px; line-height: 1.6;'));
-        main.appendChild(marketSection);
-      }
-
-      // Green flags
-      if (result.signals.greenFlags.length > 0) {
-        const greenSection = document.createElement('section');
-        greenSection.setAttribute('aria-label', 'Points positifs');
-        greenSection.style.cssText = 'background: #f0fdf4; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;';
-        const greenHeader = document.createElement('h4');
-        greenHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #166534; margin: 0 0 8px 0;';
-        greenHeader.textContent = 'Points positifs (' + result.signals.greenFlags.length + ')';
-        greenSection.appendChild(greenHeader);
-        const greenTags = DOM.div('font-size: 13px; color: #15803d; line-height: 1.6;');
-        result.signals.greenFlags.slice(0, 6).forEach(f => {
-          greenTags.appendChild(DOM.tag(f.label, '#dcfce7', '#15803d'));
-        });
-        greenSection.appendChild(greenTags);
-        main.appendChild(greenSection);
-      }
-
-      // Red flags
-      if (result.signals.redFlags.length > 0) {
-        const redSection = document.createElement('section');
-        redSection.setAttribute('aria-label', 'Alertes');
-        redSection.setAttribute('role', 'alert');
-        redSection.style.cssText = 'background: #fef2f2; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;';
-        const redHeader = document.createElement('h4');
-        redHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #991b1b; margin: 0 0 8px 0;';
-        redHeader.textContent = 'Alertes (' + result.signals.redFlags.length + ')';
-        redSection.appendChild(redHeader);
-        redSection.appendChild(DOM.ul(result.signals.redFlags.slice(0, 5).map(f => f.label), 'font-size: 13px; color: #dc2626; margin: 0; padding-left: 18px; line-height: 1.6;'));
-        main.appendChild(redSection);
-      }
-
-      // Warnings
-      if (result.signals.warnings.length > 0) {
-        const warnSection = document.createElement('section');
-        warnSection.setAttribute('aria-label', "Points d'attention");
-        warnSection.style.cssText = 'background: #fffbeb; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;';
-        const warnHeader = document.createElement('h4');
-        warnHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #92400e; margin: 0 0 8px 0;';
-        warnHeader.textContent = "Points d'attention";
-        warnSection.appendChild(warnHeader);
-        warnSection.appendChild(DOM.ul(result.signals.warnings.slice(0, 4), 'font-size: 13px; color: #b45309; margin: 0; padding-left: 18px; line-height: 1.6;'));
-        main.appendChild(warnSection);
-      }
-
-      // Recommendations
-      if (result.recommendations.length > 0) {
-        const recoSection = document.createElement('section');
-        recoSection.setAttribute('aria-label', 'Recommandations');
-        recoSection.style.cssText = 'background: #eff6ff; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;';
-        const recoHeader = document.createElement('h4');
-        recoHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #1e40af; margin: 0 0 8px 0;';
-        recoHeader.textContent = 'Recommandations';
-        recoSection.appendChild(recoHeader);
-        recoSection.appendChild(DOM.ul(result.recommendations, 'font-size: 13px; color: #2563eb; margin: 0; padding-left: 18px; line-height: 1.6;'));
-        main.appendChild(recoSection);
-      }
-
-      // Career pathways - Debouches
-      if (careerData.debouches && careerData.debouches.length > 0) {
-        const careerSection = document.createElement('section');
-        careerSection.setAttribute('aria-label', 'Évolutions de carrière');
-        careerSection.style.cssText = 'background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-radius: 8px; padding: 14px; margin-bottom: 14px; border: 1px solid #a7f3d0;';
-        const careerHeader = document.createElement('h4');
-        careerHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #059669; margin: 0 0 10px 0;';
-        careerHeader.textContent = 'Évolutions de carrière possibles';
-        careerSection.appendChild(careerHeader);
-
-        const careerList = document.createElement('ul');
-        careerList.style.cssText = 'list-style: none; margin: 0; padding: 0; font-size: 13px; color: #047857;';
-        careerData.debouches.forEach(deb => {
-          const li = document.createElement('li');
-          li.style.cssText = 'margin-bottom: 8px; padding-left: 14px; border-left: 3px solid #10b981;';
-          const title = document.createElement('strong');
-          title.style.cssText = 'display: block; color: #065f46;';
-          title.textContent = deb.title;
-          const desc = document.createElement('span');
-          desc.style.cssText = 'font-size: 12px; color: #059669;';
-          desc.textContent = deb.years + ' \u2022 ' + deb.desc;
-          li.appendChild(title);
-          li.appendChild(desc);
-          careerList.appendChild(li);
-        });
-        careerSection.appendChild(careerList);
-        main.appendChild(careerSection);
-      }
-
-      // Career pathways - Reconversion
-      if (careerData.reconversion && careerData.reconversion.length > 0) {
-        const reconSection = document.createElement('section');
-        reconSection.setAttribute('aria-label', 'Pistes de reconversion');
-        reconSection.style.cssText = 'background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%); border-radius: 8px; padding: 14px; margin-bottom: 14px; border: 1px solid #c4b5fd;';
-        const reconHeader = document.createElement('h4');
-        reconHeader.style.cssText = 'font-size: 13px; font-weight: 600; color: #7c3aed; margin: 0 0 10px 0;';
-        reconHeader.textContent = 'Pistes de reconversion';
-        reconSection.appendChild(reconHeader);
-
-        const reconList = document.createElement('ul');
-        reconList.style.cssText = 'list-style: none; margin: 0; padding: 0; font-size: 13px; color: #6d28d9;';
-        careerData.reconversion.forEach(r => {
-          const li = document.createElement('li');
-          li.style.cssText = 'margin-bottom: 8px; padding-left: 14px; border-left: 3px solid #8b5cf6;';
-          const title = document.createElement('strong');
-          title.style.cssText = 'display: block; color: #5b21b6;';
-          title.textContent = r.title;
-          const desc = document.createElement('span');
-          desc.style.cssText = 'font-size: 12px; color: #7c3aed;';
-          desc.textContent = r.desc;
-          li.appendChild(title);
-          li.appendChild(desc);
-          reconList.appendChild(li);
-        });
-        reconSection.appendChild(reconList);
-        main.appendChild(reconSection);
-      }
-
-      // Salary analysis container
-      const salaryContainer = document.createElement('div');
-      salaryContainer.id = 'fjd-salary-analysis-container';
-      main.appendChild(salaryContainer);
-
-      // Salary toggle button
-      if (d.salary && SalaryAnalyzer) {
-        const salaryToggle = document.createElement('button');
-        salaryToggle.id = 'fjd-salary-toggle';
-        salaryToggle.className = 'fjd-salary-toggle';
-        salaryToggle.setAttribute('aria-expanded', 'false');
-        salaryToggle.style.cssText = `
-          margin-top: 14px; width: 100%; padding: 12px 18px;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white; border: none; border-radius: 8px;
-          font-size: 14px; font-weight: 600; cursor: pointer;
-          transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
-        `;
-        salaryToggle.textContent = "Voir l'analyse salariale complète";
-
+      // Handler pour le toggle de l'analyse salariale
+      const salaryToggle = panel.querySelector('#fjd-salary-toggle');
+      if (salaryToggle && SalaryAnalyzer && d.salary) {
         salaryToggle.onmouseenter = () => { salaryToggle.style.transform = 'translateY(-1px)'; salaryToggle.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.4)'; };
         salaryToggle.onmouseleave = () => { salaryToggle.style.transform = 'translateY(0)'; salaryToggle.style.boxShadow = '0 2px 8px rgba(102, 126, 234, 0.3)'; };
-
         salaryToggle.onclick = () => {
-          if (salaryContainer.hasChildNodes()) {
-            while (salaryContainer.firstChild) {
-              salaryContainer.removeChild(salaryContainer.firstChild);
-            }
-            salaryToggle.textContent = "Voir l'analyse salariale complète";
+          const container = panel.querySelector('#fjd-salary-analysis-container');
+          if (container.innerHTML) {
+            container.innerHTML = '';
+            salaryToggle.textContent = '📊 Voir l\'analyse salariale complète';
           } else {
             const avgSalary = Math.round((d.salary.min + d.salary.max) / 2);
             const analysis = SalaryAnalyzer.analyze({
@@ -589,35 +495,95 @@
               location: (d.location || '').toLowerCase().includes('paris') ? 'paris' : 'province',
               isCadre: true
             });
-            if (SalaryAnalyzer.generateDOM) {
-              salaryContainer.appendChild(SalaryAnalyzer.generateDOM(analysis));
-            } else {
-              const salaryText = document.createElement('div');
-              salaryText.style.cssText = 'padding: 12px; background: #f8fafc; border-radius: 8px; margin-top: 12px;';
-              salaryText.textContent = 'Analyse salariale: ' + (analysis.verdict || 'Non disponible');
-              salaryContainer.appendChild(salaryText);
-            }
-            salaryToggle.textContent = "Masquer l'analyse salariale";
+            container.innerHTML = SalaryAnalyzer.generateHTML(analysis);
+            salaryToggle.textContent = '📊 Masquer l\'analyse salariale';
           }
         };
-
-        main.appendChild(salaryToggle);
       }
-
-      panel.appendChild(main);
-      document.body.appendChild(panel);
-
-      closeBtn.onclick = () => this.closePanel();
-      closeBtn.onmouseenter = () => { closeBtn.style.background = '#f1f5f9'; };
-      closeBtn.onmouseleave = () => { closeBtn.style.background = 'none'; };
-      closeBtn.focus();
-      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') this.closePanel(); }, { once: true });
     },
 
     closePanel() {
       document.querySelectorAll('.fjd-panel, .fjd-overlay').forEach(el => el.remove());
     }
   };
+
+  // ============================================================================
+  // MARQUEURS VISUELS DE FLAGS
+  // ============================================================================
+
+  function addFlagMarkers(card, result) {
+    // Supprimer les anciens marqueurs
+    card.querySelectorAll('.fjd-flag-marker').forEach(el => el.remove());
+
+    const container = document.createElement('div');
+    container.className = 'fjd-flag-marker';
+    container.style.cssText = `
+      display: flex; flex-wrap: wrap; gap: 4px;
+      position: absolute; bottom: 8px; left: 8px; right: 70px;
+      pointer-events: none; z-index: 50;
+    `;
+
+    // Red Flags (max 3)
+    const redFlags = result.signals?.redFlags || [];
+    redFlags.slice(0, 3).forEach(flag => {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+      `;
+      marker.textContent = `⚠ ${flag.label}`;
+      marker.title = flag.label;
+      container.appendChild(marker);
+    });
+
+    // Green Flags (max 2, seulement si pas de red flags)
+    if (redFlags.length === 0) {
+      const greenFlags = result.signals?.greenFlags || [];
+      greenFlags.slice(0, 2).forEach(flag => {
+        const marker = document.createElement('span');
+        marker.style.cssText = `
+          display: inline-flex; align-items: center; gap: 2px;
+          padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+          background: #dcfce7; color: #16a34a; border: 1px solid #86efac;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+        `;
+        marker.textContent = `✓ ${flag.label}`;
+        marker.title = flag.label;
+        container.appendChild(marker);
+      });
+    }
+
+    // Marqueurs spéciaux
+    if (result.repostedCheck?.isReposted) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fed7aa; color: #c2410c; border: 1px solid #fb923c;
+      `;
+      marker.textContent = `🔄 Republiée`;
+      container.appendChild(marker);
+    }
+
+    if (result.entryLevelCheck?.isIncoherent) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fef3c7; color: #b45309; border: 1px solid #fcd34d;
+      `;
+      marker.textContent = `⚡ Incohérent`;
+      marker.title = result.entryLevelCheck.issues[0]?.label || 'Incohérence détectée';
+      container.appendChild(marker);
+    }
+
+    if (container.children.length > 0) {
+      if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+      card.appendChild(container);
+    }
+  }
 
   // ============================================================================
   // EXTRACTION ET ANALYSE
@@ -655,7 +621,11 @@
       location: getText(SELECTORS.location),
       salary: salary ? `${salary.min} - ${salary.max} € / an` : '',
       description: enrichedText,
-      linkedinData: { salary, diploma, experience, contractType, remoteWork, isAgency, sector, companySize }
+      linkedinData: {
+        salary, diploma, experience, contractType, remoteWork, isAgency, sector, companySize,
+        isReposted: LinkedInParser.isReposted(fullText),
+        postedDaysAgo: LinkedInParser.extractPostedDaysAgo(fullText)
+      }
     };
   }
 
@@ -670,12 +640,20 @@
     const jobData = extractJobData(card);
     if (!jobData.title || jobData.title.length < 3) return;
 
-    const result = Analyzer.evaluate(jobData, {});
+    const result = Analyzer.evaluate(jobData, {
+      platform: 'linkedin',
+      applicantCount: null,
+      isReposted: jobData.linkedinData.isReposted,
+      postedDaysAgo: jobData.linkedinData.postedDaysAgo
+    });
     result.linkedinData = jobData.linkedinData;
     result.jobTitle = jobData.title;
     result.company = jobData.company;
 
     const badge = UI.createBadge(result);
+
+    // Ajouter marqueurs visuels de flags
+    addFlagMarkers(card, result);
     badge.style.position = 'absolute';
     badge.style.top = '8px';
     badge.style.right = '8px';
@@ -712,21 +690,39 @@
     const remoteWork = LinkedInParser.extractRemoteWork(pageText);
     const isAgency = LinkedInParser.isRecruitmentAgency(pageText);
     const companySize = LinkedInParser.extractCompanySize(pageText);
+    const applicantCount = LinkedInParser.extractApplicantCount(pageText);
+    const isReposted = LinkedInParser.isReposted(pageText);
+    const postedDaysAgo = LinkedInParser.extractPostedDaysAgo(pageText);
 
     const jobData = {
       title: document.querySelector(SELECTORS.detailTitle)?.textContent?.trim() || '',
       company: document.querySelector(SELECTORS.detailCompany)?.textContent?.trim() || '',
       salary: salary ? `${salary.min} - ${salary.max} € / an` : '',
       description: container.textContent || '',
-      linkedinData: { salary, diploma, experience, contractType, remoteWork, isAgency, companySize }
+      linkedinData: { salary, diploma, experience, contractType, remoteWork, isAgency, companySize, applicantCount, isReposted, postedDaysAgo }
     };
 
     if (!jobData.title && !jobData.description) return;
 
-    const result = Analyzer.evaluate(jobData, {});
+    const result = Analyzer.evaluate(jobData, {
+      platform: 'linkedin',
+      applicantCount: applicantCount,
+      isReposted: isReposted,
+      postedDaysAgo: postedDaysAgo
+    });
     result.linkedinData = jobData.linkedinData;
     result.jobTitle = jobData.title;
     result.company = jobData.company;
+
+    // Stocker l'analyse pour le popup
+    lastAnalysis = {
+      score: result.pertinenceScore,
+      status: result.status,
+      redFlags: result.signals?.redFlags || [],
+      greenFlags: result.signals?.greenFlags || [],
+      jobTitle: jobData.title,
+      company: jobData.company
+    };
 
     const badge = UI.createBadge(result);
     badge.style.marginBottom = '12px';

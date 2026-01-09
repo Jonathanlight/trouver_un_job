@@ -5,13 +5,16 @@
 document.addEventListener('DOMContentLoaded', async () => {
   // Charger les statistiques
   await loadStats();
-  
+
   // Charger les paramètres
   await loadSettings();
-  
+
+  // Charger l'analyse de l'offre actuelle
+  await loadCurrentJobAnalysis();
+
   // Événements des toggles
   setupSettingsListeners();
-  
+
   // Événement du bouton de réinitialisation
   document.getElementById('btn-clear-stats').addEventListener('click', clearStats);
 });
@@ -49,6 +52,100 @@ async function loadSettings() {
     document.getElementById('setting-notify').checked = settings.notifyHighRisk;
   } catch (error) {
     console.error('Erreur lors du chargement des paramètres:', error);
+  }
+}
+
+/**
+ * Charge l'analyse de l'offre d'emploi actuelle
+ */
+async function loadCurrentJobAnalysis() {
+  const analysisSection = document.getElementById('analysis-section');
+  const analysisEmpty = document.getElementById('analysis-empty');
+  const analysisScore = document.getElementById('analysis-score');
+  const redflagsGroup = document.getElementById('redflags-group');
+  const greenflagsGroup = document.getElementById('greenflags-group');
+  const redflagsList = document.getElementById('redflags-list');
+  const greenflagsList = document.getElementById('greenflags-list');
+
+  try {
+    // Obtenir l'onglet actif
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    if (!tab || !tab.url) {
+      return;
+    }
+
+    // Vérifier si c'est un site supporté
+    const supportedSites = ['indeed.com', 'indeed.fr', 'linkedin.com', 'hellowork.com', 'hellowork.io', 'welcometothejungle.com'];
+    const isSupported = supportedSites.some(site => tab.url.includes(site));
+
+    if (!isSupported) {
+      return;
+    }
+
+    // Afficher la section d'analyse
+    analysisSection.style.display = 'block';
+
+    // Demander l'analyse au content script
+    try {
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'getCurrentJobAnalysis' });
+
+      if (response && response.success && response.analysis) {
+        const { score, redFlags, greenFlags, status } = response.analysis;
+
+        // Afficher le score
+        const scoreValue = analysisScore.querySelector('.analysis__score-value');
+        scoreValue.textContent = score;
+        analysisScore.className = 'analysis__score';
+        if (status === 'danger') {
+          analysisScore.classList.add('analysis__score--danger');
+        } else if (status === 'warning') {
+          analysisScore.classList.add('analysis__score--warning');
+        } else {
+          analysisScore.classList.add('analysis__score--good');
+        }
+
+        // Afficher les red flags
+        if (redFlags && redFlags.length > 0) {
+          redflagsGroup.style.display = 'block';
+          redflagsList.innerHTML = '';
+          redFlags.forEach(flag => {
+            const li = document.createElement('li');
+            li.className = 'flag-item flag-item--red';
+            li.innerHTML = `<span class="flag-item__impact">${flag.impact > 0 ? '+' : ''}${flag.impact}</span> ${flag.label}`;
+            redflagsList.appendChild(li);
+          });
+        }
+
+        // Afficher les green flags
+        if (greenFlags && greenFlags.length > 0) {
+          greenflagsGroup.style.display = 'block';
+          greenflagsList.innerHTML = '';
+          greenFlags.forEach(flag => {
+            const li = document.createElement('li');
+            li.className = 'flag-item flag-item--green';
+            li.innerHTML = `<span class="flag-item__impact">+${flag.impact || flag.score || 0}</span> ${flag.label}`;
+            greenflagsList.appendChild(li);
+          });
+        }
+
+        // Si aucun flag
+        if ((!redFlags || redFlags.length === 0) && (!greenFlags || greenFlags.length === 0)) {
+          analysisEmpty.style.display = 'block';
+          analysisEmpty.textContent = 'Aucun flag détecté pour cette offre';
+        }
+      } else {
+        // Pas d'analyse disponible
+        analysisEmpty.style.display = 'block';
+        analysisScore.style.display = 'none';
+      }
+    } catch (err) {
+      // Content script non chargé ou pas de réponse
+      analysisEmpty.style.display = 'block';
+      analysisScore.style.display = 'none';
+    }
+  } catch (error) {
+    console.error('Erreur lors du chargement de l\'analyse:', error);
   }
 }
 

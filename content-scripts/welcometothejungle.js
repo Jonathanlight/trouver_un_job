@@ -78,6 +78,18 @@
   let processedElements = new WeakSet();
   let retryCount = 0;
   const MAX_RETRIES = 20; // Plus de retries pour les pages lentes
+  let lastAnalysis = null;
+
+  // Message listener pour le popup
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'getCurrentJobAnalysis') {
+      sendResponse({
+        success: !!lastAnalysis,
+        analysis: lastAnalysis
+      });
+    }
+    return true;
+  });
 
   const StatsTracker = {
     pending: { analyzed: 0, flagged: 0, critical: 0 },
@@ -277,8 +289,90 @@
     extractLocation(text) {
       const match = text.match(/(?:Paris|Lyon|Marseille|Bordeaux|Nantes|Toulouse|Lille|Nice|Strasbourg|Montpellier|Rennes|Grenoble|Rouen|Toulon|France|Remote)[^,\n]*/i);
       return match ? match[0].trim() : null;
+    },
+
+    // Détecter si l'offre est republiée/actualisée
+    isReposted(text) {
+      return /republiée|actualisée|mise\s*à\s*jour|prolongée/i.test(text);
     }
   };
+
+  // ============================================================================
+  // MARQUEURS VISUELS DE FLAGS
+  // ============================================================================
+
+  function addFlagMarkers(card, result) {
+    card.querySelectorAll('.fjd-flag-marker').forEach(el => el.remove());
+
+    const container = document.createElement('div');
+    container.className = 'fjd-flag-marker';
+    container.style.cssText = `
+      display: flex; flex-wrap: wrap; gap: 4px;
+      position: absolute; bottom: 8px; left: 8px; right: 70px;
+      pointer-events: none; z-index: 50;
+    `;
+
+    // Red Flags (max 3)
+    const redFlags = result.signals?.redFlags || [];
+    redFlags.slice(0, 3).forEach(flag => {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+      `;
+      marker.textContent = `⚠ ${flag.label}`;
+      marker.title = flag.label;
+      container.appendChild(marker);
+    });
+
+    // Green Flags si pas de red flags
+    if (redFlags.length === 0) {
+      const greenFlags = result.signals?.greenFlags || [];
+      greenFlags.slice(0, 2).forEach(flag => {
+        const marker = document.createElement('span');
+        marker.style.cssText = `
+          display: inline-flex; align-items: center; gap: 2px;
+          padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+          background: #dcfce7; color: #16a34a; border: 1px solid #86efac;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+        `;
+        marker.textContent = `✓ ${flag.label}`;
+        marker.title = flag.label;
+        container.appendChild(marker);
+      });
+    }
+
+    // Marqueurs spéciaux
+    if (result.repostedCheck?.isReposted) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fed7aa; color: #c2410c; border: 1px solid #fb923c;
+      `;
+      marker.textContent = `🔄 Republiée`;
+      container.appendChild(marker);
+    }
+
+    if (result.entryLevelCheck?.isIncoherent) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fef3c7; color: #b45309; border: 1px solid #fcd34d;
+      `;
+      marker.textContent = `⚡ Incohérent`;
+      marker.title = result.entryLevelCheck.issues[0]?.label || 'Incohérence détectée';
+      container.appendChild(marker);
+    }
+
+    if (container.children.length > 0) {
+      if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+      card.appendChild(container);
+    }
+  }
 
   // ============================================================================
   // UI
@@ -600,7 +694,11 @@
       location: location || '',
       salary: salary ? `${salary.min} - ${salary.max} € / an` : '',
       description: enrichedText,
-      wttjData: { salary, diploma, experience, contractType, remoteWork, companySize, sector, jobAge, location }
+      wttjData: {
+        salary, diploma, experience, contractType, remoteWork, companySize, sector, jobAge, location,
+        isReposted: WTTJParser.isReposted(fullText),
+        postedDaysAgo: jobAge  // jobAge est déjà en jours
+      }
     };
   }
 
@@ -621,12 +719,21 @@
     const jobData = extractJobData(card);
     if (!jobData.title || jobData.title.length < 3) return;
 
-    const result = Analyzer.evaluate(jobData, {});
+    const result = Analyzer.evaluate(jobData, {
+      platform: 'wttj',
+      applicantCount: null,
+      isReposted: jobData.wttjData.isReposted,
+      postedDaysAgo: jobData.wttjData.postedDaysAgo
+    });
     result.wttjData = jobData.wttjData;
     result.jobTitle = jobData.title;
     result.company = jobData.company;
 
     const badge = UI.createBadge(result);
+
+    // Ajouter marqueurs visuels de flags
+    addFlagMarkers(card, result);
+
     badge.style.position = 'absolute';
     badge.style.top = '8px';
     badge.style.right = '8px';
@@ -727,6 +834,16 @@
     result.wttjData = jobData.wttjData;
     result.jobTitle = jobData.title;
     result.company = jobData.company;
+
+    // Stocker l'analyse pour le popup
+    lastAnalysis = {
+      score: result.pertinenceScore,
+      status: result.status,
+      redFlags: result.signals?.redFlags || [],
+      greenFlags: result.signals?.greenFlags || [],
+      jobTitle: jobData.title,
+      company: jobData.company
+    };
 
     const badge = UI.createBadge(result);
     badge.style.marginBottom = '16px';

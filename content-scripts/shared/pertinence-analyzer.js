@@ -17,6 +17,425 @@ const FJD_PertinenceAnalyzer = (function() {
   };
 
   // ============================================================================
+  // MODIFICATEURS PAR PLATEFORME
+  // ============================================================================
+
+  const PLATFORM_MODIFIERS = {
+    linkedin: {
+      basePenalty: 0,
+      redFlagMultiplier: 1.0,
+      trustBonus: 5,  // LinkedIn vérifie les entreprises
+      applicantWeight: 1.0
+    },
+    indeed: {
+      basePenalty: 0,
+      redFlagMultiplier: 1.0,
+      trustBonus: 0,
+      applicantWeight: 1.1
+    },
+    hellowork: {
+      basePenalty: 5,  // Pénalité de base - beaucoup de fausses offres bien formatées
+      redFlagMultiplier: 1.3,  // +30% sur les red flags
+      trustBonus: -3,  // HelloWork moins fiable par défaut
+      applicantWeight: 0.9
+    },
+    wttj: {
+      basePenalty: 0,
+      redFlagMultiplier: 1.0,
+      trustBonus: 3,  // WTTJ vérifie les entreprises
+      applicantWeight: 1.0
+    },
+    default: {
+      basePenalty: 0,
+      redFlagMultiplier: 1.0,
+      trustBonus: 0,
+      applicantWeight: 1.0
+    }
+  };
+
+  // ============================================================================
+  // PÉNALITÉS NOMBRE DE CANDIDATS
+  // ============================================================================
+
+  const APPLICANT_PENALTIES = [
+    { threshold: 500, penalty: 45, label: "Ghost job très probable", level: "critical" },
+    { threshold: 300, penalty: 35, label: "Offre saturée", level: "high" },
+    { threshold: 200, penalty: 25, label: "Très forte concurrence", level: "high" },
+    { threshold: 100, penalty: 15, label: "Forte concurrence", level: "medium" },
+    { threshold: 50,  penalty: 8,  label: "Concurrence modérée", level: "low" }
+  ];
+
+  function calculateApplicantPenalty(applicantCount, platform = 'default') {
+    if (applicantCount === null || applicantCount === undefined || applicantCount < 0) {
+      return { penalty: 0, label: null, level: null };
+    }
+
+    const platformMod = PLATFORM_MODIFIERS[platform] || PLATFORM_MODIFIERS.default;
+
+    for (const tier of APPLICANT_PENALTIES) {
+      if (applicantCount >= tier.threshold) {
+        const adjustedPenalty = Math.round(tier.penalty * platformMod.applicantWeight);
+        return {
+          penalty: adjustedPenalty,
+          label: `${applicantCount}+ candidats - ${tier.label}`,
+          level: tier.level,
+          isGhostJob: tier.level === "critical"
+        };
+      }
+    }
+
+    // Moins de 50 candidats = légèrement positif
+    if (applicantCount < 10) {
+      return { penalty: -5, label: `${applicantCount} candidats - Faible concurrence`, level: "positive" };
+    }
+    if (applicantCount < 25) {
+      return { penalty: -2, label: `${applicantCount} candidats - Bonne opportunité`, level: "positive" };
+    }
+
+    return { penalty: 0, label: null, level: null };
+  }
+
+  // ============================================================================
+  // VÉRIFICATION ENTREPRISE (HEURISTIQUES LOCALES)
+  // ============================================================================
+
+  const COMPANY_VERIFICATION = {
+    legitimate: [
+      { pattern: /\b(SA|SAS|SARL|EURL|SNC|GIE|SASU)\b/i, score: 10, label: "Forme juridique identifiée" },
+      { pattern: /RCS\s+[A-Za-z]+\s*\d+/i, score: 12, label: "RCS mentionné" },
+      { pattern: /siret\s*:\s*\d{14}/i, score: 15, label: "SIRET complet" },
+      { pattern: /siège\s+(social\s+)?(à|situé|basé)/i, score: 6, label: "Siège social mentionné" },
+      { pattern: /(\d{2,})\s*(ans?\s+d'?existence|années?\s+d'?activité)/i, score: 5, label: "Ancienneté mentionnée" },
+      { pattern: /filiale\s+(de|du\s+groupe)/i, score: 8, label: "Filiale identifiée" },
+      { pattern: /coté(e)?\s+(en\s+)?bourse|CAC\s*40|SBF|euronext/i, score: 15, label: "Société cotée" },
+      { pattern: /certifi(é|cation)\s+(ISO|AFNOR|B\s*Corp|Qualiopi)/i, score: 8, label: "Certification qualité" },
+      { pattern: /convention\s+collective|ccn\s*\d+/i, score: 10, label: "Convention collective" },
+      { pattern: /\d{3,}\s*(collaborateurs?|salariés?|employés?)/i, score: 6, label: "Effectif mentionné" }
+    ],
+    suspicious: [
+      { pattern: /entreprise\s+confidentielle/i, score: -20, label: "Entreprise cachée" },
+      { pattern: /nom\s+(de\s+l'?)?entreprise\s*:\s*(confidentiel|NC|non\s+communiqué)/i, score: -25, label: "Nom entreprise non communiqué" },
+      { pattern: /pour\s+(le\s+)?compte\s+d'?un\s+client/i, score: -10, label: "Client non identifié" },
+      { pattern: /nous\s+recherchons\s+pour\s+(nos\s+)?clients?/i, score: -12, label: "Cabinet multi-clients vague" },
+      { pattern: /leader\s+(du\s+marché|mondial|européen|français)\s*[.!]?\s*$/i, score: -8, label: "Auto-proclamation vague" },
+      { pattern: /entreprise\s+(dynamique|innovante|en\s+pleine\s+croissance)\s*[.!]?\s*$/i, score: -5, label: "Description générique" },
+      { pattern: /acteur\s+(majeur|incontournable|de\s+référence)/i, score: -5, label: "Formule creuse" },
+      { pattern: /\ben\s+phase\s+de\s+(création|lancement)\b/i, score: -8, label: "Entreprise non établie" },
+      { pattern: /startup\s+early\s*stage/i, score: -5, label: "Startup très jeune" }
+    ],
+    nameQuality: [
+      { check: (name) => !name || name.length < 3, score: -15, label: "Nom entreprise absent/trop court" },
+      { check: (name) => /^[A-Z\s]+$/.test(name) && name.length > 12, score: -3, label: "Nom tout en majuscules" },
+      { check: (name) => /recrutement|interim|rh\s*solution|staffing/i.test(name), score: -8, label: "Intermédiaire de recrutement" },
+      { check: (name) => /\d{4,}/.test(name), score: -10, label: "Numéros suspects dans le nom" },
+      { check: (name) => /[!@#$%^&*()]+/.test(name), score: -15, label: "Caractères spéciaux dans le nom" }
+    ]
+  };
+
+  function evaluateCompanyLegitimacy(text, companyName) {
+    let score = 50; // Score de base neutre
+    const signals = [];
+
+    // Vérifier les indicateurs légitimes
+    for (const indicator of COMPANY_VERIFICATION.legitimate) {
+      if (indicator.pattern.test(text)) {
+        score += indicator.score;
+        signals.push({ type: 'positive', label: indicator.label, score: indicator.score });
+      }
+    }
+
+    // Vérifier les indicateurs suspects
+    for (const indicator of COMPANY_VERIFICATION.suspicious) {
+      if (indicator.pattern.test(text)) {
+        score += indicator.score;
+        signals.push({ type: 'negative', label: indicator.label, score: indicator.score });
+      }
+    }
+
+    // Vérifier la qualité du nom d'entreprise
+    if (companyName) {
+      for (const check of COMPANY_VERIFICATION.nameQuality) {
+        if (check.check(companyName)) {
+          score += check.score;
+          signals.push({ type: 'negative', label: check.label, score: check.score });
+        }
+      }
+    } else {
+      score -= 15;
+      signals.push({ type: 'negative', label: "Nom entreprise absent", score: -15 });
+    }
+
+    // Vérifier cohérence email/entreprise
+    const emailMatch = text.match(/@([a-z0-9-]+)\.(com|fr|eu|io|co)/i);
+    if (emailMatch && companyName && companyName.length > 4) {
+      const domain = emailMatch[1].toLowerCase();
+      const companyClean = companyName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (domain.includes(companyClean.substring(0, Math.min(5, companyClean.length)))) {
+        score += 8;
+        signals.push({ type: 'positive', label: 'Email cohérent avec entreprise', score: 8 });
+      }
+    }
+
+    return {
+      score: Math.max(0, Math.min(100, score)),
+      signals,
+      isVerified: score >= 60,
+      isSuspicious: score < 35
+    };
+  }
+
+  // ============================================================================
+  // DÉTECTION OFFRE REPUBLIÉE
+  // ============================================================================
+
+  const REPOSTED_PATTERNS = [
+    { pattern: /republiée/i, penalty: 15, label: "Offre republiée" },
+    { pattern: /reposted/i, penalty: 15, label: "Offre republiée (reposted)" },
+    { pattern: /actualiser?\s*(le|l')?\s*\d+/i, penalty: 10, label: "Offre actualisée" },
+    { pattern: /mise\s*à\s*jour\s*(le|:)/i, penalty: 8, label: "Offre mise à jour" },
+    { pattern: /prolongée?\s*jusqu/i, penalty: 12, label: "Offre prolongée" },
+    { pattern: /toujours\s*(d'?)?actualité/i, penalty: 10, label: "Toujours d'actualité (suspect)" },
+    { pattern: /poste\s*toujours\s*(ouvert|disponible)/i, penalty: 8, label: "Poste toujours ouvert" }
+  ];
+
+  function detectRepostedOffer(text, context = {}) {
+    let totalPenalty = 0;
+    const signals = [];
+    let isReposted = false;
+
+    // Vérifier les patterns textuels
+    for (const item of REPOSTED_PATTERNS) {
+      if (item.pattern.test(text)) {
+        totalPenalty += item.penalty;
+        signals.push({ label: item.label, penalty: item.penalty });
+        if (item.label.includes('republiée') || item.label.includes('reposted')) {
+          isReposted = true;
+        }
+      }
+    }
+
+    // Si le contexte contient explicitement isReposted (extrait par la plateforme)
+    if (context.isReposted === true) {
+      if (!isReposted) {
+        totalPenalty += 15;
+        signals.push({ label: "Offre republiée", penalty: 15 });
+      }
+      isReposted = true;
+    }
+
+    // Vérifier l'ancienneté si disponible (offre > 30 jours = suspect)
+    if (context.postedDaysAgo !== null && context.postedDaysAgo !== undefined) {
+      if (context.postedDaysAgo > 60) {
+        totalPenalty += 20;
+        signals.push({ label: `Offre ancienne (${context.postedDaysAgo}+ jours)`, penalty: 20 });
+      } else if (context.postedDaysAgo > 30) {
+        totalPenalty += 10;
+        signals.push({ label: `Offre de ${context.postedDaysAgo} jours`, penalty: 10 });
+      }
+    }
+
+    return {
+      penalty: totalPenalty,
+      signals,
+      isReposted,
+      shouldWarn: totalPenalty >= 10
+    };
+  }
+
+  // ============================================================================
+  // DÉTECTION INCOHÉRENCES JUNIOR / STAGE / ALTERNANCE
+  // ============================================================================
+
+  const ENTRY_LEVEL_CONFIG = {
+    // Types de contrats d'entrée de carrière
+    entryContracts: {
+      stage: {
+        pattern: /\bstage\b|internship/i,
+        maxExperience: 1,
+        maxSalary: 15000,  // Gratification max ~7k€/an pour 6 mois
+        label: "Stage"
+      },
+      alternance: {
+        pattern: /\balternance\b|\bapprentissage\b|\bcontrat\s*(d'?)?apprentissage\b|\bcontrat\s*pro\b/i,
+        maxExperience: 1,
+        maxSalary: 28000,  // Salaire max alternant
+        label: "Alternance"
+      },
+      junior: {
+        pattern: /\bjunior\b|\bdébutant\b|\bentrée\s*(de\s*)?carrière\b|\bentry\s*level\b|\bjeune\s*diplômé\b|\bgraduate\b/i,
+        maxExperience: 2,
+        maxSalary: 42000,  // Salaire junior max raisonnable
+        label: "Junior/Débutant"
+      }
+    },
+
+    // Patterns de responsabilités senior incompatibles avec profil junior
+    seniorResponsibilities: [
+      { pattern: /manager?\s*(une?\s*)?(équipe|team)/i, label: "Management d'équipe" },
+      { pattern: /encadrer?\s*(une?\s*)?\d+\s*(personnes?|collaborateurs?)/i, label: "Encadrement" },
+      { pattern: /budget\s*(de\s*)?\d+\s*(k€?|m€?|millions?)/i, label: "Responsabilité budget" },
+      { pattern: /pilotage\s*(stratégique|global)/i, label: "Pilotage stratégique" },
+      { pattern: /définir?\s*(la\s*)?(stratégie|vision)/i, label: "Définition stratégie" },
+      { pattern: /p&l|profit\s*(and|&)\s*loss/i, label: "Responsabilité P&L" },
+      { pattern: /directeur|director|head\s*of|responsable\s*(de\s*)?(département|service)/i, label: "Poste de direction" },
+      { pattern: /expérience\s*(confirmée|significative|solide)/i, label: "Expérience confirmée requise" }
+    ],
+
+    // Patterns d'expérience excessive pour profil junior
+    excessiveExperience: [
+      { pattern: /(\d+)\s*[-àa]\s*(\d+)\s*ans?\s*(d'?)?exp/i, extract: (m) => Math.max(parseInt(m[1]), parseInt(m[2])) },
+      { pattern: /(\d+)\s*ans?\s*(d'?)?exp\s*(min|minimum|requis)/i, extract: (m) => parseInt(m[1]) },
+      { pattern: /minimum\s*(\d+)\s*ans?/i, extract: (m) => parseInt(m[1]) },
+      { pattern: /au\s*moins\s*(\d+)\s*ans?/i, extract: (m) => parseInt(m[1]) }
+    ]
+  };
+
+  function detectEntryLevelIncoherence(text, jobData, context = {}) {
+    const issues = [];
+    let totalPenalty = 0;
+    let detectedLevel = null;
+    let isIncoherent = false;
+
+    // Détecter le type de contrat d'entrée
+    for (const [type, config] of Object.entries(ENTRY_LEVEL_CONFIG.entryContracts)) {
+      if (config.pattern.test(text)) {
+        detectedLevel = { type, ...config };
+        break;
+      }
+    }
+
+    // Si ce n'est pas un poste d'entrée, pas d'analyse
+    if (!detectedLevel) {
+      return { penalty: 0, issues: [], isIncoherent: false, detectedLevel: null };
+    }
+
+    // 1. Vérifier l'expérience demandée
+    let maxExperienceFound = 0;
+    for (const expPattern of ENTRY_LEVEL_CONFIG.excessiveExperience) {
+      const match = text.match(expPattern.pattern);
+      if (match) {
+        const years = expPattern.extract(match);
+        maxExperienceFound = Math.max(maxExperienceFound, years);
+      }
+    }
+
+    if (maxExperienceFound > detectedLevel.maxExperience) {
+      const penalty = Math.min(30, (maxExperienceFound - detectedLevel.maxExperience) * 10);
+      totalPenalty += penalty;
+      issues.push({
+        type: 'experience',
+        label: `${detectedLevel.label} demandant ${maxExperienceFound} ans d'expérience`,
+        penalty,
+        severity: 'high'
+      });
+      isIncoherent = true;
+    }
+
+    // 2. Vérifier les responsabilités senior
+    const seniorResponsibilitiesFound = [];
+    for (const resp of ENTRY_LEVEL_CONFIG.seniorResponsibilities) {
+      if (resp.pattern.test(text)) {
+        seniorResponsibilitiesFound.push(resp.label);
+      }
+    }
+
+    if (seniorResponsibilitiesFound.length > 0) {
+      const penalty = Math.min(25, seniorResponsibilitiesFound.length * 8);
+      totalPenalty += penalty;
+      issues.push({
+        type: 'responsibilities',
+        label: `${detectedLevel.label} avec responsabilités senior: ${seniorResponsibilitiesFound.slice(0, 2).join(', ')}`,
+        penalty,
+        severity: 'high'
+      });
+      isIncoherent = true;
+    }
+
+    // 3. Vérifier le salaire (si disponible et trop élevé pour le niveau)
+    const salary = context.salary || jobData?.salary;
+    if (salary && typeof salary === 'object' && salary.max) {
+      if (salary.max > detectedLevel.maxSalary * 1.3) {
+        const penalty = 12;
+        totalPenalty += penalty;
+        issues.push({
+          type: 'salary',
+          label: `Salaire élevé pour ${detectedLevel.label.toLowerCase()} (${Math.round(salary.max/1000)}k€)`,
+          penalty,
+          severity: 'medium'
+        });
+      }
+    }
+
+    // 4. Vérifier les titres contradictoires
+    const contradictoryTitles = [
+      { pattern: /senior\s*(et|\/)\s*junior/i, label: "Titre contradictoire senior/junior" },
+      { pattern: /\bsenior\b.*\bjunior\b|\bjunior\b.*\bsenior\b/i, label: "Mélange senior et junior" },
+      { pattern: /confirmé.*débutant|débutant.*confirmé/i, label: "Mélange confirmé et débutant" },
+      { pattern: /expert.*junior|junior.*expert/i, label: "Mélange expert et junior" }
+    ];
+
+    for (const title of contradictoryTitles) {
+      if (title.pattern.test(text)) {
+        totalPenalty += 15;
+        issues.push({
+          type: 'title',
+          label: title.label,
+          penalty: 15,
+          severity: 'high'
+        });
+        isIncoherent = true;
+        break;
+      }
+    }
+
+    // 5. Vérifications spécifiques par type
+    if (detectedLevel.type === 'stage') {
+      // Stage de plus de 6 mois = suspect
+      if (/stage\s*(de\s*)?(8|9|10|11|12)\s*mois/i.test(text)) {
+        totalPenalty += 10;
+        issues.push({
+          type: 'duration',
+          label: "Stage de durée excessive",
+          penalty: 10,
+          severity: 'medium'
+        });
+      }
+
+      // Stage demandant CDI/CDD après = OK, mais stage sans possibilité = attention
+      if (/sans\s*(embauche|possibilité)/i.test(text)) {
+        totalPenalty += 5;
+        issues.push({
+          type: 'outcome',
+          label: "Stage sans perspective d'embauche",
+          penalty: 5,
+          severity: 'low'
+        });
+      }
+    }
+
+    if (detectedLevel.type === 'alternance') {
+      // Alternance demandant disponibilité immédiate (contradictoire avec rythme école)
+      if (/disponible?\s*imm[ée]diat/i.test(text) && !/rentrée|septembre|janvier/i.test(text)) {
+        totalPenalty += 8;
+        issues.push({
+          type: 'availability',
+          label: "Alternance avec disponibilité immédiate (suspect)",
+          penalty: 8,
+          severity: 'medium'
+        });
+      }
+    }
+
+    return {
+      penalty: totalPenalty,
+      issues,
+      isIncoherent,
+      detectedLevel: detectedLevel.label,
+      shouldWarn: totalPenalty >= 10
+    };
+  }
+
+  // ============================================================================
   // DONNÉES DE RÉFÉRENCE MARCHÉ FRANCE 2024-2025
   // ============================================================================
 
@@ -636,6 +1055,11 @@ const FJD_PertinenceAnalyzer = (function() {
     evaluate(jobData, context = {}) {
       const text = `${jobData.title || ''} ${jobData.company || ''} ${jobData.location || ''} ${jobData.salary || ''} ${jobData.description || ''}`;
 
+      // Récupérer le contexte plateforme
+      const platform = context.platform || 'default';
+      const platformMod = PLATFORM_MODIFIERS[platform] || PLATFORM_MODIFIERS.default;
+      const applicantCount = context.applicantCount || null;
+
       // Détections
       const diploma = detectDiploma(text);
       const experience = detectExperience(text);
@@ -650,16 +1074,60 @@ const FJD_PertinenceAnalyzer = (function() {
       const profile = calculateProfileScore(text, diploma, experience);
       const coherence = calculateCoherenceScore(text, salary, diploma, experience, sector);
 
-      // Score final pondéré
-      const pertinenceScore = Math.round(
-        CONFIG.weights.legitimacy * legitimacy.score +
+      // Vérification de l'entreprise
+      const companyVerification = evaluateCompanyLegitimacy(text, jobData.company);
+
+      // Pénalité nombre de candidats
+      const applicantPenalty = calculateApplicantPenalty(applicantCount, platform);
+
+      // Détection offre republiée
+      const repostedCheck = detectRepostedOffer(text, {
+        isReposted: context.isReposted,
+        postedDaysAgo: context.postedDaysAgo
+      });
+
+      // Détection incohérences junior/stage/alternance
+      const entryLevelCheck = detectEntryLevelIncoherence(text, jobData, {
+        salary: context.salary || null
+      });
+
+      // Appliquer le multiplicateur de red flags pour la plateforme
+      const adjustedLegitimacyScore = Math.max(0, Math.min(100,
+        legitimacy.score - (legitimacy.redFlags.length * (platformMod.redFlagMultiplier - 1) * 5)
+      ));
+
+      // Ajuster le score de qualité avec la vérification entreprise
+      const companyAdjustment = Math.round((companyVerification.score - 50) * 0.3);
+      const adjustedQualityScore = Math.max(0, Math.min(100, quality.score + companyAdjustment));
+
+      // Score final pondéré avec modificateurs plateforme
+      let pertinenceScore = Math.round(
+        CONFIG.weights.legitimacy * adjustedLegitimacyScore +
         CONFIG.weights.market * market.score +
-        CONFIG.weights.quality * quality.score +
+        CONFIG.weights.quality * adjustedQualityScore +
         CONFIG.weights.profile * profile.score +
         CONFIG.weights.coherence * coherence.score
       );
 
-      const classification = determineClassification(pertinenceScore, legitimacy.hasCriticalFlags);
+      // Appliquer les modificateurs de plateforme
+      pertinenceScore = pertinenceScore - platformMod.basePenalty + platformMod.trustBonus;
+
+      // Appliquer la pénalité nombre de candidats
+      pertinenceScore = pertinenceScore - applicantPenalty.penalty;
+
+      // Appliquer la pénalité offre republiée
+      pertinenceScore = pertinenceScore - repostedCheck.penalty;
+
+      // Appliquer la pénalité incohérences junior/stage/alternance
+      pertinenceScore = pertinenceScore - entryLevelCheck.penalty;
+
+      // Borner le score final
+      pertinenceScore = Math.max(0, Math.min(100, pertinenceScore));
+
+      // Déterminer si l'offre doit être affichée en orange (warning)
+      const shouldShowWarning = repostedCheck.shouldWarn || entryLevelCheck.shouldWarn || applicantPenalty.level === 'medium';
+
+      const classification = determineClassification(pertinenceScore, legitimacy.hasCriticalFlags || applicantPenalty.isGhostJob);
       const recommendations = generateRecommendations(classification, { legitimacy, market, quality, profile, coherence });
 
       // Collecte de tous les warnings
@@ -670,26 +1138,102 @@ const FJD_PertinenceAnalyzer = (function() {
         ...coherence.warnings
       ];
 
+      // Ajouter les signaux de vérification entreprise aux warnings
+      for (const signal of companyVerification.signals) {
+        if (signal.type === 'negative') {
+          allWarnings.push(signal.label);
+        }
+      }
+
+      // Ajouter l'avertissement candidats si applicable
+      if (applicantPenalty.label) {
+        allWarnings.push(applicantPenalty.label);
+      }
+
+      // Ajouter les signaux d'offre republiée
+      for (const signal of repostedCheck.signals) {
+        allWarnings.push(signal.label);
+      }
+
+      // Ajouter les signaux positifs entreprise aux greenFlags
+      const enhancedGreenFlags = [...legitimacy.greenFlags];
+
+      // Ajouter les incohérences junior/stage/alternance aux red flags
+      const enhancedRedFlags = [...legitimacy.redFlags];
+      for (const issue of entryLevelCheck.issues) {
+        if (issue.severity === 'high') {
+          enhancedRedFlags.push({ label: issue.label, impact: -Math.abs(issue.penalty), severity: issue.severity });
+        } else {
+          enhancedRedFlags.push({ label: issue.label, impact: -Math.abs(issue.penalty), severity: 'medium' });
+        }
+      }
+
+      // Ajouter offre republiée aux red flags si applicable
+      if (repostedCheck.isReposted) {
+        enhancedRedFlags.push({ label: "Offre republiée", impact: -15, severity: 'medium' });
+      }
+
+      // Ajouter les signaux d'offre ancienne aux red flags
+      for (const signal of repostedCheck.signals) {
+        if (signal.penalty > 0) {
+          enhancedRedFlags.push({ label: signal.label, impact: -signal.penalty, severity: signal.penalty >= 15 ? 'high' : 'medium' });
+        }
+      }
+
+      // Ajouter la pénalité candidats aux red flags si applicable
+      if (applicantPenalty.label && applicantPenalty.penalty > 0) {
+        enhancedRedFlags.push({
+          label: applicantPenalty.label,
+          impact: -applicantPenalty.penalty,
+          severity: applicantPenalty.level === 'critical' ? 'critical' : (applicantPenalty.level === 'high' ? 'high' : 'medium')
+        });
+      }
+
+      // Ajouter les signaux négatifs de vérification entreprise aux red flags
+      for (const signal of companyVerification.signals) {
+        if (signal.type === 'negative') {
+          enhancedRedFlags.push({ label: signal.label, impact: signal.score, severity: 'medium' });
+        } else if (signal.type === 'positive') {
+          enhancedGreenFlags.push({ label: signal.label, impact: signal.score, level: 'medium' });
+        }
+      }
+
       return {
         pertinenceScore,
         classification,
+        shouldShowWarning,  // Pour affichage orange
 
         // Détections
         detected: { diploma, experience, sector, location: location.name, salary },
 
+        // Contexte plateforme
+        platform: {
+          name: platform,
+          modifier: platformMod,
+          applicantCount,
+          applicantPenalty
+        },
+
+        // Vérification entreprise
+        companyVerification,
+
+        // Vérifications spéciales
+        repostedCheck,      // Offre republiée
+        entryLevelCheck,    // Incohérences junior/stage/alternance
+
         // Scores détaillés
         scores: {
-          legitimacy: { score: legitimacy.score, redFlags: legitimacy.redFlags, greenFlags: legitimacy.greenFlags },
+          legitimacy: { score: adjustedLegitimacyScore, redFlags: enhancedRedFlags, greenFlags: legitimacy.greenFlags },
           market: { score: market.score, details: market.details, warnings: market.warnings, expected: market.expectedSalary },
-          quality: { score: quality.score, criteria: quality.criteria, sections: quality.sections, warnings: quality.warnings },
+          quality: { score: adjustedQualityScore, criteria: quality.criteria, sections: quality.sections, warnings: quality.warnings },
           profile: { score: profile.score, details: profile.details, warnings: profile.warnings },
           coherence: { score: coherence.score, issues: coherence.issues }
         },
 
         // Signaux
         signals: {
-          redFlags: legitimacy.redFlags,
-          greenFlags: legitimacy.greenFlags,
+          redFlags: enhancedRedFlags,
+          greenFlags: enhancedGreenFlags,
           warnings: allWarnings
         },
 

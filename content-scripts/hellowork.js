@@ -16,6 +16,72 @@
   const Analyzer = window.FJD_PertinenceAnalyzer;
   const SalaryAnalyzer = window.FJD_SalaryMarketAnalyzer;
 
+  // ============================================================================
+  // RED FLAGS SPÉCIFIQUES HELLOWORK
+  // HelloWork a beaucoup de fausses offres bien formatées
+  // ============================================================================
+
+  const HELLOWORK_RED_FLAGS = {
+    // Patterns spécifiques à HelloWork
+    platformPatterns: [
+      { pattern: /offre\s*sponsorisée/i, impact: -8, label: "Offre sponsorisée" },
+      { pattern: /super\s*recruteur/i, impact: -5, label: "Super Recruteur HelloWork" },
+      { pattern: /postuler\s*en\s*1\s*clic/i, impact: -3, label: "Candidature simplifiée" },
+      { pattern: /(\d+)\s*offres?\s*similaires?/i, impact: -5, label: "Nombreuses offres similaires" }
+    ],
+
+    // Patterns de fausses offres bien formatées
+    fakeJobPatterns: [
+      { pattern: /nous\s*recherchons\s*pour\s*(nos\s*)?clients?/i, impact: -12, label: "Cabinet multi-clients" },
+      { pattern: /plusieurs\s*postes?\s*(à\s*pourvoir|disponibles?)/i, impact: -8, label: "Postes multiples vagues" },
+      { pattern: /secteur\s*(confidentiel|non\s*précisé)/i, impact: -15, label: "Secteur caché" },
+      { pattern: /mission\s*d'?intérim\s*(longue\s*durée|renouvelable)/i, impact: -5, label: "Intérim déguisé" },
+      { pattern: /poste\s*(évolutif|à\s*définir)/i, impact: -8, label: "Poste flou" },
+      { pattern: /profil\s*(polyvalent|adaptable)/i, impact: -5, label: "Profil trop vague" },
+      { pattern: /rémunération\s*(attractive|selon\s*profil|à\s*négocier)/i, impact: -6, label: "Salaire non précisé" }
+    ],
+
+    // Vérifications de qualité spécifiques HelloWork
+    qualityChecks: [
+      { check: (desc) => desc && desc.length < 300, impact: -10, label: "Description trop courte" },
+      { check: (desc) => desc && (desc.match(/\n/g) || []).length < 5, impact: -5, label: "Peu structurée" },
+      { check: (company) => company && company.toLowerCase().includes('recrutement'), impact: -8, label: "Cabinet de recrutement" },
+      { check: (company) => company && /interim|adecco|manpower|randstad|synergie/i.test(company), impact: -6, label: "Agence d'intérim" }
+    ]
+  };
+
+  function applyHelloWorkRedFlags(text, jobData) {
+    let totalImpact = 0;
+    const flags = [];
+
+    // Appliquer les patterns de plateforme
+    for (const flag of HELLOWORK_RED_FLAGS.platformPatterns) {
+      if (flag.pattern.test(text)) {
+        totalImpact += flag.impact;
+        flags.push({ label: flag.label, impact: flag.impact });
+      }
+    }
+
+    // Appliquer les patterns de fausses offres
+    for (const flag of HELLOWORK_RED_FLAGS.fakeJobPatterns) {
+      if (flag.pattern.test(text)) {
+        totalImpact += flag.impact;
+        flags.push({ label: flag.label, impact: flag.impact });
+      }
+    }
+
+    // Appliquer les vérifications de qualité
+    for (const check of HELLOWORK_RED_FLAGS.qualityChecks) {
+      const value = check.check.length === 1 ? jobData.description : jobData.company;
+      if (check.check(value)) {
+        totalImpact += check.impact;
+        flags.push({ label: check.label, impact: check.impact });
+      }
+    }
+
+    return { totalImpact, flags };
+  }
+
   // Sélecteurs spécifiques HelloWork
   const SELECTORS = {
     // Cartes d'offres - sélecteurs multiples pour robustesse
@@ -79,6 +145,18 @@
   let processedElements = new WeakSet();
   let retryCount = 0;
   const MAX_RETRIES = 10;
+  let lastAnalysis = null;
+
+  // Message listener pour le popup
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'getCurrentJobAnalysis') {
+      sendResponse({
+        success: !!lastAnalysis,
+        analysis: lastAnalysis
+      });
+    }
+    return true;
+  });
 
   const StatsTracker = {
     pending: { analyzed: 0, flagged: 0, critical: 0 },
@@ -225,8 +303,127 @@
         if (sector.pattern.test(text)) return sector.name;
       }
       return null;
+    },
+
+    // Extraire le nombre de candidatures si disponible
+    extractApplicantCount(text) {
+      // Formats HelloWork: "X candidatures", "X personnes ont postulé", "Postulez parmi les X premiers"
+      const patterns = [
+        /(\d+)\s*(?:candidatures?|candidats?)/i,
+        /(\d+)\s*(?:personnes?\s*ont\s*postulé)/i,
+        /postulé\s*par\s*(\d+)/i,
+        /parmi\s*les\s*(\d+)\s*premiers?/i,
+        /déjà\s*(\d+)\s*candidat/i
+      ];
+
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match) {
+          return parseInt(match[1]);
+        }
+      }
+      return null;
+    },
+
+    // Détecter si l'offre est republiée/actualisée
+    isReposted(text) {
+      return /republiée|actualisée|mise\s*à\s*jour|prolongée/i.test(text);
+    },
+
+    // Extraire le nombre de jours depuis publication
+    extractPostedDaysAgo(text) {
+      let match = text.match(/publiée?\s*(il\s*y\s*a\s*)?(\d+)\s*(?:jours?)/i);
+      if (match) return parseInt(match[2]);
+
+      match = text.match(/il\s*y\s*a\s*(\d+)\s*(?:semaines?)/i);
+      if (match) return parseInt(match[1]) * 7;
+
+      match = text.match(/il\s*y\s*a\s*(\d+)\s*(?:mois)/i);
+      if (match) return parseInt(match[1]) * 30;
+
+      if (/aujourd'?hui|ce\s*jour/i.test(text)) return 0;
+      if (/hier/i.test(text)) return 1;
+
+      return null;
     }
   };
+
+  // ============================================================================
+  // MARQUEURS VISUELS DE FLAGS
+  // ============================================================================
+
+  function addFlagMarkers(card, result) {
+    card.querySelectorAll('.fjd-flag-marker').forEach(el => el.remove());
+
+    const container = document.createElement('div');
+    container.className = 'fjd-flag-marker';
+    container.style.cssText = `
+      display: flex; flex-wrap: wrap; gap: 4px;
+      position: absolute; bottom: 8px; left: 8px; right: 70px;
+      pointer-events: none; z-index: 50;
+    `;
+
+    // Red Flags (max 3)
+    const redFlags = result.signals?.redFlags || [];
+    redFlags.slice(0, 3).forEach(flag => {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+      `;
+      marker.textContent = `⚠ ${flag.label}`;
+      marker.title = flag.label;
+      container.appendChild(marker);
+    });
+
+    // Green Flags si pas de red flags
+    if (redFlags.length === 0) {
+      const greenFlags = result.signals?.greenFlags || [];
+      greenFlags.slice(0, 2).forEach(flag => {
+        const marker = document.createElement('span');
+        marker.style.cssText = `
+          display: inline-flex; align-items: center; gap: 2px;
+          padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+          background: #dcfce7; color: #16a34a; border: 1px solid #86efac;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+        `;
+        marker.textContent = `✓ ${flag.label}`;
+        marker.title = flag.label;
+        container.appendChild(marker);
+      });
+    }
+
+    // Marqueurs spéciaux
+    if (result.repostedCheck?.isReposted) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fed7aa; color: #c2410c; border: 1px solid #fb923c;
+      `;
+      marker.textContent = `🔄 Republiée`;
+      container.appendChild(marker);
+    }
+
+    if (result.entryLevelCheck?.isIncoherent) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fef3c7; color: #b45309; border: 1px solid #fcd34d;
+      `;
+      marker.textContent = `⚡ Incohérent`;
+      marker.title = result.entryLevelCheck.issues[0]?.label || 'Incohérence détectée';
+      container.appendChild(marker);
+    }
+
+    if (container.children.length > 0) {
+      if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+      card.appendChild(container);
+    }
+  }
 
   // ============================================================================
   // UI
@@ -509,6 +706,7 @@
     const remoteWork = HelloWorkParser.extractRemoteWork(fullText);
     const isAgency = HelloWorkParser.isRecruitmentAgency(fullText);
     const sector = HelloWorkParser.extractSector(fullText);
+    const applicantCount = HelloWorkParser.extractApplicantCount(fullText);
 
     // Construire le texte avec les données structurées pour l'analyseur
     let enrichedText = fullText;
@@ -532,7 +730,10 @@
         contractType,
         remoteWork,
         isAgency,
-        sector
+        sector,
+        applicantCount,
+        isReposted: HelloWorkParser.isReposted(fullText),
+        postedDaysAgo: HelloWorkParser.extractPostedDaysAgo(fullText)
       }
     };
   }
@@ -550,8 +751,36 @@
     const jobData = extractJobData(card);
     if (!jobData.title || jobData.title.length < 3) return;
 
-    // Analyser avec l'analyseur de pertinence
-    const result = Analyzer.evaluate(jobData, {});
+    // Appliquer les red flags spécifiques HelloWork
+    const fullText = card.textContent || '';
+    const helloworkFlags = applyHelloWorkRedFlags(fullText, jobData);
+
+    // Analyser avec l'analyseur de pertinence - avec contexte HelloWork
+    const result = Analyzer.evaluate(jobData, {
+      platform: 'hellowork',
+      applicantCount: jobData.helloworkData.applicantCount,
+      isReposted: jobData.helloworkData.isReposted,
+      postedDaysAgo: jobData.helloworkData.postedDaysAgo
+    });
+
+    // Ajouter les flags HelloWork aux red flags existants
+    if (helloworkFlags.flags.length > 0) {
+      for (const flag of helloworkFlags.flags) {
+        result.signals.redFlags.push({ label: flag.label, impact: flag.impact, severity: 'medium' });
+      }
+      // Ajuster le score final avec les pénalités HelloWork
+      result.pertinenceScore = Math.max(0, result.pertinenceScore + helloworkFlags.totalImpact);
+      // Recalculer la classification si nécessaire
+      if (result.pertinenceScore < result.classification.minScore) {
+        const CLASSIFICATIONS = Analyzer.CLASSIFICATIONS;
+        for (const cls of Object.values(CLASSIFICATIONS)) {
+          if (result.pertinenceScore >= cls.minScore) {
+            result.classification = { ...cls };
+            break;
+          }
+        }
+      }
+    }
 
     // Ajouter les données HelloWork au résultat
     result.helloworkData = jobData.helloworkData;
@@ -559,6 +788,10 @@
     result.company = jobData.company;
 
     const badge = UI.createBadge(result);
+
+    // Ajouter marqueurs visuels de flags
+    addFlagMarkers(card, result);
+
     badge.style.position = 'absolute';
     badge.style.top = '8px';
     badge.style.right = '8px';
@@ -601,6 +834,9 @@
     const contractType = HelloWorkParser.extractContractType(pageText);
     const remoteWork = HelloWorkParser.extractRemoteWork(pageText);
     const isAgency = HelloWorkParser.isRecruitmentAgency(pageText);
+    const applicantCount = HelloWorkParser.extractApplicantCount(pageText);
+    const isReposted = HelloWorkParser.isReposted(pageText);
+    const postedDaysAgo = HelloWorkParser.extractPostedDaysAgo(pageText);
 
     const jobData = {
       title,
@@ -608,13 +844,41 @@
       location: document.querySelector(SELECTORS.location)?.textContent?.trim() || '',
       salary: salary ? `${salary.min} - ${salary.max} € / an` : '',
       description: container.textContent || '',
-      helloworkData: { salary, diploma, experience, contractType, remoteWork, isAgency }
+      helloworkData: { salary, diploma, experience, contractType, remoteWork, isAgency, applicantCount, isReposted, postedDaysAgo }
     };
 
-    const result = Analyzer.evaluate(jobData, {});
+    // Appliquer les red flags spécifiques HelloWork
+    const helloworkFlags = applyHelloWorkRedFlags(pageText, jobData);
+
+    // Analyser avec contexte HelloWork
+    const result = Analyzer.evaluate(jobData, {
+      platform: 'hellowork',
+      applicantCount: applicantCount,
+      isReposted: isReposted,
+      postedDaysAgo: postedDaysAgo
+    });
+
+    // Ajouter les flags HelloWork
+    if (helloworkFlags.flags.length > 0) {
+      for (const flag of helloworkFlags.flags) {
+        result.signals.redFlags.push({ label: flag.label, impact: flag.impact, severity: 'medium' });
+      }
+      result.pertinenceScore = Math.max(0, result.pertinenceScore + helloworkFlags.totalImpact);
+    }
+
     result.helloworkData = jobData.helloworkData;
     result.jobTitle = jobData.title;
     result.company = jobData.company;
+
+    // Stocker l'analyse pour le popup
+    lastAnalysis = {
+      score: result.pertinenceScore,
+      status: result.status,
+      redFlags: result.signals?.redFlags || [],
+      greenFlags: result.signals?.greenFlags || [],
+      jobTitle: jobData.title,
+      company: jobData.company
+    };
 
     const badge = UI.createBadge(result);
     badge.style.marginBottom = '12px';

@@ -145,6 +145,136 @@ body {
   font-weight: 500;
 }
 
+/* Analysis */
+.analysis {
+  padding: 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(15, 23, 42, 0.3);
+}
+
+.analysis__title {
+  font-size: 12px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 16px;
+}
+
+.analysis__score {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
+.analysis__score-value {
+  font-size: 32px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.analysis__score--good .analysis__score-value {
+  color: #22c55e;
+}
+
+.analysis__score--warning .analysis__score-value {
+  color: #f59e0b;
+}
+
+.analysis__score--danger .analysis__score-value {
+  color: #ef4444;
+}
+
+.analysis__score-label {
+  font-size: 12px;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+
+.analysis__flags {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.flags-group {
+  padding: 12px;
+  border-radius: 10px;
+}
+
+.flags-group--red {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.flags-group--green {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.flags-group__title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.flags-group--red .flags-group__title {
+  color: #ef4444;
+}
+
+.flags-group--green .flags-group__title {
+  color: #22c55e;
+}
+
+.flags-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.flag-item {
+  font-size: 12px;
+  color: #cbd5e1;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flag-item__impact {
+  font-weight: 700;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  min-width: 36px;
+  text-align: center;
+}
+
+.flag-item--red .flag-item__impact {
+  background: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.flag-item--green .flag-item__impact {
+  background: rgba(34, 197, 94, 0.3);
+  color: #22c55e;
+}
+
+.analysis__empty {
+  font-size: 12px;
+  color: #64748b;
+  text-align: center;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+}
+
 /* Settings */
 .settings {
   padding: 20px;

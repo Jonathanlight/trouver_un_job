@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "TrouverUnJob",
-  "version": "1.0.0",
-  "description": "Analysez les offres d'emploi, détectez les arnaques et évaluez les salaires du marché sur Indeed, LinkedIn, HelloWork et WTTJ",
+  "version": "1.2.0",
+  "description": "Analysez les offres d'emploi, détectez les arnaques et évaluez les salaires du marché sur Indeed, LinkedIn, HelloWork et WTTJ. Compatible Chrome, Arc, Brave, Edge et tous navigateurs Chromium.",
+  "minimum_chrome_version": "102",
   "permissions": [
     "activeTab",
     "storage"

@@ -34,6 +34,18 @@
   let processedElements = new WeakSet();
   let retryCount = 0;
   const MAX_RETRIES = 10;
+  let lastAnalysis = null;
+
+  // Message listener pour le popup
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'getCurrentJobAnalysis') {
+      sendResponse({
+        success: !!lastAnalysis,
+        analysis: lastAnalysis
+      });
+    }
+    return true;
+  });
 
   const StatsTracker = {
     pending: { analyzed: 0, flagged: 0, critical: 0 },
@@ -199,8 +211,122 @@
         if (sector.pattern.test(text)) return sector.name;
       }
       return null;
+    },
+
+    // Détecter si l'offre est republiée
+    isReposted(text) {
+      return /republiée|reposted|actualisée|mise\s*à\s*jour/i.test(text);
+    },
+
+    // Extraire le nombre de jours depuis publication
+    extractPostedDaysAgo(text) {
+      let match = text.match(/(?:publiée?|posted)\s*(il\s*y\s*a\s*)?(\d+)\s*(?:jours?|days?)/i);
+      if (match) return parseInt(match[2]);
+
+      match = text.match(/il\s*y\s*a\s*(\d+)\s*(?:semaines?)/i);
+      if (match) return parseInt(match[1]) * 7;
+
+      match = text.match(/(\d+)\s*(?:jours?|days?)\s*ago/i);
+      if (match) return parseInt(match[1]);
+
+      if (/aujourd'?hui|today|just\s*posted/i.test(text)) return 0;
+      if (/hier|yesterday/i.test(text)) return 1;
+
+      return null;
+    },
+
+    // Extraire le nombre de candidats
+    extractApplicantCount(text) {
+      // Format Indeed: "X personnes ont postulé" ou "X candidatures"
+      let match = text.match(/(\d+)\s*personnes?\s*(?:ont\s*)?postulé/i);
+      if (match) return parseInt(match[1]);
+
+      match = text.match(/(\d+)\s*candidatures?/i);
+      if (match) return parseInt(match[1]);
+
+      match = text.match(/(\d+)\s*(?:applicants?|candidats?)/i);
+      if (match) return parseInt(match[1]);
+
+      return null;
     }
   };
+
+  // ============================================================================
+  // MARQUEURS VISUELS DE FLAGS
+  // ============================================================================
+
+  function addFlagMarkers(card, result) {
+    card.querySelectorAll('.fjd-flag-marker').forEach(el => el.remove());
+
+    const container = document.createElement('div');
+    container.className = 'fjd-flag-marker';
+    container.style.cssText = `
+      display: flex; flex-wrap: wrap; gap: 4px;
+      position: absolute; bottom: 8px; left: 8px; right: 70px;
+      pointer-events: none; z-index: 50;
+    `;
+
+    // Red Flags (max 3)
+    const redFlags = result.signals?.redFlags || [];
+    redFlags.slice(0, 3).forEach(flag => {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+      `;
+      marker.textContent = `⚠ ${flag.label}`;
+      marker.title = flag.label;
+      container.appendChild(marker);
+    });
+
+    // Green Flags si pas de red flags
+    if (redFlags.length === 0) {
+      const greenFlags = result.signals?.greenFlags || [];
+      greenFlags.slice(0, 2).forEach(flag => {
+        const marker = document.createElement('span');
+        marker.style.cssText = `
+          display: inline-flex; align-items: center; gap: 2px;
+          padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+          background: #dcfce7; color: #16a34a; border: 1px solid #86efac;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+        `;
+        marker.textContent = `✓ ${flag.label}`;
+        marker.title = flag.label;
+        container.appendChild(marker);
+      });
+    }
+
+    // Marqueurs spéciaux
+    if (result.repostedCheck?.isReposted) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fed7aa; color: #c2410c; border: 1px solid #fb923c;
+      `;
+      marker.textContent = `🔄 Republiée`;
+      container.appendChild(marker);
+    }
+
+    if (result.entryLevelCheck?.isIncoherent) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fef3c7; color: #b45309; border: 1px solid #fcd34d;
+      `;
+      marker.textContent = `⚡ Incohérent`;
+      marker.title = result.entryLevelCheck.issues[0]?.label || 'Incohérence détectée';
+      container.appendChild(marker);
+    }
+
+    if (container.children.length > 0) {
+      if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+      card.appendChild(container);
+    }
+  }
 
   // ============================================================================
   // UI
@@ -496,7 +622,11 @@
       location: getText(SELECTORS.location),
       salary: salary ? `${salary.min} - ${salary.max} € / an` : getText(SELECTORS.salary),
       description: enrichedText,
-      indeedData: { salary, diploma, experience, contractType, remoteWork, isAgency, sector }
+      indeedData: {
+        salary, diploma, experience, contractType, remoteWork, isAgency, sector,
+        isReposted: IndeedParser.isReposted(fullText),
+        postedDaysAgo: IndeedParser.extractPostedDaysAgo(fullText)
+      }
     };
   }
 
@@ -511,12 +641,20 @@
     const jobData = extractJobData(card);
     if (!jobData.title || jobData.title.length < 3) return;
 
-    const result = Analyzer.evaluate(jobData, {});
+    const result = Analyzer.evaluate(jobData, {
+      platform: 'indeed',
+      applicantCount: null,
+      isReposted: jobData.indeedData.isReposted,
+      postedDaysAgo: jobData.indeedData.postedDaysAgo
+    });
     result.indeedData = jobData.indeedData;
     result.jobTitle = jobData.title;
     result.company = jobData.company;
 
     const badge = UI.createBadge(result);
+
+    // Ajouter marqueurs visuels de flags
+    addFlagMarkers(card, result);
     badge.style.position = 'absolute';
     badge.style.top = '8px';
     badge.style.right = '8px';
@@ -552,6 +690,9 @@
     const contractType = IndeedParser.extractContractType(pageText);
     const remoteWork = IndeedParser.extractRemoteWork(pageText);
     const isAgency = IndeedParser.isRecruitmentAgency(pageText);
+    const applicantCount = IndeedParser.extractApplicantCount(pageText);
+    const isReposted = IndeedParser.isReposted(pageText);
+    const postedDaysAgo = IndeedParser.extractPostedDaysAgo(pageText);
 
     const getText = (sel) => document.querySelector(sel)?.textContent?.trim() || '';
     const jobData = {
@@ -559,15 +700,30 @@
       company: getText(SELECTORS.detailCompany),
       salary: salary ? `${salary.min} - ${salary.max} € / an` : '',
       description: container.textContent || '',
-      indeedData: { salary, diploma, experience, contractType, remoteWork, isAgency }
+      indeedData: { salary, diploma, experience, contractType, remoteWork, isAgency, applicantCount, isReposted, postedDaysAgo }
     };
 
     if (!jobData.title && !jobData.description) return;
 
-    const result = Analyzer.evaluate(jobData, {});
+    const result = Analyzer.evaluate(jobData, {
+      platform: 'indeed',
+      applicantCount: applicantCount,
+      isReposted: isReposted,
+      postedDaysAgo: postedDaysAgo
+    });
     result.indeedData = jobData.indeedData;
     result.jobTitle = jobData.title;
     result.company = jobData.company;
+
+    // Stocker l'analyse pour le popup
+    lastAnalysis = {
+      score: result.pertinenceScore,
+      status: result.status,
+      redFlags: result.signals?.redFlags || [],
+      greenFlags: result.signals?.greenFlags || [],
+      jobTitle: jobData.title,
+      company: jobData.company
+    };
 
     const badge = UI.createBadge(result);
     badge.style.marginBottom = '12px';

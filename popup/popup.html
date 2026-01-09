@@ -14,7 +14,7 @@
         <span class="header__icon">💼</span>
         <h1 class="header__title">TrouverUnJob</h1>
       </div>
-      <span class="header__version">v1.0.0</span>
+      <span class="header__version">v1.2.0</span>
     </header>
 
     <!-- Stats -->
@@ -37,6 +37,28 @@
     <section class="status" id="status-section">
       <div class="status__indicator status__indicator--active"></div>
       <span class="status__text">Extension active</span>
+    </section>
+
+    <!-- Current Job Analysis -->
+    <section class="analysis" id="analysis-section" style="display: none;">
+      <h2 class="analysis__title">Analyse de l'offre actuelle</h2>
+      <div class="analysis__score" id="analysis-score">
+        <span class="analysis__score-value">--</span>
+        <span class="analysis__score-label">Score</span>
+      </div>
+      <div class="analysis__flags" id="analysis-flags">
+        <div class="flags-group flags-group--red" id="redflags-group" style="display: none;">
+          <h3 class="flags-group__title">🚩 Red Flags</h3>
+          <ul class="flags-list" id="redflags-list"></ul>
+        </div>
+        <div class="flags-group flags-group--green" id="greenflags-group" style="display: none;">
+          <h3 class="flags-group__title">✅ Green Flags</h3>
+          <ul class="flags-list" id="greenflags-list"></ul>
+        </div>
+      </div>
+      <p class="analysis__empty" id="analysis-empty" style="display: none;">
+        Naviguez vers une offre d'emploi pour voir l'analyse
+      </p>
     </section>
 
     <!-- Settings -->
