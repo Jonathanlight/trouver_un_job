@@ -1,0 +1,79 @@
+{
+  "manifest_version": 2,
+  "name": "TrouverUnJob",
+  "version": "1.0.0",
+  "description": "Analysez les offres d'emploi, détectez les arnaques et évaluez les salaires du marché sur Indeed, LinkedIn, HelloWork et WTTJ",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "trouverunjob@extension.firefox",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"],
+        "optional": []
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "*://*.indeed.com/*",
+    "*://*.indeed.fr/*",
+    "*://*.linkedin.com/*",
+    "*://*.hellowork.com/*",
+    "*://*.hellowork.io/*",
+    "*://*.welcometothejungle.com/*"
+  ],
+  "browser_action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.indeed.com/*",
+        "*://*.indeed.fr/*"
+      ],
+      "js": ["content-scripts/dom-helper.js", "content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/indeed.js"],
+      "css": ["content-scripts/styles.css"]
+    },
+    {
+      "matches": [
+        "*://*.linkedin.com/jobs/*"
+      ],
+      "js": ["content-scripts/dom-helper.js", "content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/linkedin.js"],
+      "css": ["content-scripts/styles.css"]
+    },
+    {
+      "matches": [
+        "*://*.hellowork.com/*",
+        "*://*.hellowork.io/*"
+      ],
+      "js": ["content-scripts/dom-helper.js", "content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/hellowork.js"],
+      "css": ["content-scripts/styles.css"]
+    },
+    {
+      "matches": [
+        "*://*.welcometothejungle.com/*"
+      ],
+      "js": ["content-scripts/dom-helper.js", "content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/welcometothejungle.js"],
+      "css": ["content-scripts/styles.css"]
+    }
+  ],
+  "background": {
+    "scripts": ["background/service-worker.js"]
+  }
+}

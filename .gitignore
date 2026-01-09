@@ -1,0 +1,8 @@
+.env
+node_modules/
+mcp-server/.npm-cache/
+mcp-server/node_modules/
+.DS_Store
+.claude/
+dist/
+*.zip

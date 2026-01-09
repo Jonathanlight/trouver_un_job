@@ -1,0 +1,28 @@
+{
+  "name": "trouver-un-job",
+  "version": "1.0.0",
+  "description": "Extension Chrome pour analyser les offres d'emploi, détecter les arnaques et évaluer les salaires du marché",
+  "private": true,
+  "scripts": {
+    "clean": "rm -rf dist",
+    "prebuild": "npm run clean",
+    "build": "node scripts/build.js",
+    "package": "npm run build && cd dist && zip -r trouver-un-job-v1.0.0.zip . -x '*.zip' && echo '✅ Package created: dist/trouver-un-job-v1.0.0.zip'",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "chrome-extension",
+    "job-search",
+    "fake-job-detector",
+    "salary-analyzer",
+    "indeed",
+    "linkedin",
+    "hellowork",
+    "welcometothejungle"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

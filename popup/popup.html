@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TrouverUnJob</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup">
+    <!-- Header -->
+    <header class="header">
+      <div class="header__logo">
+        <span class="header__icon">💼</span>
+        <h1 class="header__title">TrouverUnJob</h1>
+      </div>
+      <span class="header__version">v1.0.0</span>
+    </header>
+
+    <!-- Stats -->
+    <section class="stats">
+      <div class="stat">
+        <span class="stat__value" id="stat-analyzed">0</span>
+        <span class="stat__label">Analysées</span>
+      </div>
+      <div class="stat stat--warning">
+        <span class="stat__value" id="stat-flagged">0</span>
+        <span class="stat__label">Suspectes</span>
+      </div>
+      <div class="stat stat--danger">
+        <span class="stat__value" id="stat-critical">0</span>
+        <span class="stat__label">Critiques</span>
+      </div>
+    </section>
+
+    <!-- Status -->
+    <section class="status" id="status-section">
+      <div class="status__indicator status__indicator--active"></div>
+      <span class="status__text">Extension active</span>
+    </section>
+
+    <!-- Settings -->
+    <section class="settings">
+      <h2 class="settings__title">Paramètres</h2>
+      
+      <label class="toggle">
+        <input type="checkbox" id="setting-auto-analyze" checked>
+        <span class="toggle__slider"></span>
+        <span class="toggle__label">Analyse automatique</span>
+      </label>
+
+      <label class="toggle">
+        <input type="checkbox" id="setting-show-badges" checked>
+        <span class="toggle__slider"></span>
+        <span class="toggle__label">Afficher les badges</span>
+      </label>
+
+      <label class="toggle">
+        <input type="checkbox" id="setting-notify">
+        <span class="toggle__slider"></span>
+        <span class="toggle__label">Notifications pour offres critiques</span>
+      </label>
+    </section>
+
+    <!-- Supported Sites -->
+    <section class="sites">
+      <h2 class="sites__title">Sites supportés</h2>
+      <div class="sites__list">
+        <div class="site">
+          <span class="site__icon">💼</span>
+          <span class="site__name">Indeed</span>
+          <span class="site__status site__status--active">✓</span>
+        </div>
+        <div class="site">
+          <span class="site__icon">🔗</span>
+          <span class="site__name">LinkedIn</span>
+          <span class="site__status site__status--active">✓</span>
+        </div>
+        <div class="site">
+          <span class="site__icon">👋</span>
+          <span class="site__name">HelloWork</span>
+          <span class="site__status site__status--active">✓</span>
+        </div>
+        <div class="site">
+          <span class="site__icon">🌴</span>
+          <span class="site__name">WTTJ</span>
+          <span class="site__status site__status--active">✓</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Actions -->
+    <section class="actions">
+      <button class="btn btn--secondary" id="btn-clear-stats">
+        🗑️ Réinitialiser les stats
+      </button>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>Trouvez le job parfait, en toute sécurité</p>
+      <a href="https://paypal.me/jonathankbln" target="_blank" class="footer__donate">
+        ☕ Soutenir le projet
+      </a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,1221 @@
+/**
+ * Fake Job Detector - Analyseur de Pertinence Universel v2.0
+ * Croisement linéaire: Diplôme × Salaire × Profil × Rédaction
+ */
+
+const FJD_PertinenceAnalyzer = (function() {
+  'use strict';
+
+  const CONFIG = {
+    weights: {
+      legitimacy: 0.25,
+      market: 0.25,
+      quality: 0.20,
+      profile: 0.15,
+      coherence: 0.15
+    }
+  };
+
+  // ============================================================================
+  // DONNÉES DE RÉFÉRENCE MARCHÉ FRANCE 2024-2025
+  // ============================================================================
+
+  const MARKET_DATA = {
+    // Salaires par niveau de diplôme (brut annuel)
+    salaryByDiploma: {
+      'cap_bep': { min: 21000, median: 24000, max: 30000 },
+      'bac': { min: 23000, median: 27000, max: 34000 },
+      'bac2': { min: 26000, median: 32000, max: 40000 },
+      'bac3': { min: 28000, median: 35000, max: 45000 },
+      'bac5': { min: 34000, median: 42000, max: 55000 },
+      'bac8': { min: 40000, median: 52000, max: 70000 }
+    },
+
+    // Bonus par années d'expérience (coefficient multiplicateur)
+    experienceBonus: {
+      0: 0.85, 1: 0.92, 2: 1.00, 3: 1.08, 4: 1.15,
+      5: 1.22, 7: 1.35, 10: 1.50, 15: 1.70, 20: 1.85
+    },
+
+    // Secteurs avec coefficients
+    sectors: {
+      'tech': { coef: 1.25, keywords: /développ|developer|devops|data|software|engineer|fullstack|backend|frontend|cloud|ia|machine\s*learning|python|java|php|javascript|react|node|sre|cyber/i },
+      'finance': { coef: 1.20, keywords: /financ|comptab|audit|contrôle|gestion|trésor|risk|analyst|banque/i },
+      'energie': { coef: 1.15, keywords: /électric|énerg|nucléaire|edf|engie|maintenance|haute\s*tension|basse\s*tension/i },
+      'sante': { coef: 1.10, keywords: /médic|infirm|aide.soign|pharma|santé|hôpital|clinique/i },
+      'industrie': { coef: 1.05, keywords: /industriel|production|usine|manufactur|qualité|méthode|maintenance/i },
+      'social': { coef: 0.90, keywords: /social|éducat|association|aide|accompagn|insertion|travailleur\s*social/i },
+      'commerce': { coef: 0.95, keywords: /commercial|vente|retail|magasin|vendeur/i },
+      'services': { coef: 0.95, keywords: /service|domicile|auxiliaire|aide.personne|ménage/i },
+      'default': { coef: 1.00, keywords: null }
+    },
+
+    // Localisation (IDF = +15%, grandes villes = +5%, province = -5%)
+    locations: {
+      'paris': 1.15, '75': 1.15, 'ile-de-france': 1.10, 'idf': 1.10,
+      '92': 1.10, '93': 1.05, '94': 1.08, '78': 1.05, '91': 1.05, '95': 1.05, '77': 1.03,
+      'lyon': 1.05, 'marseille': 1.02, 'toulouse': 1.02, 'bordeaux': 1.03,
+      'nantes': 1.02, 'lille': 1.00, 'nice': 1.03, 'strasbourg': 1.00,
+      'default': 0.95
+    }
+  };
+
+  // ============================================================================
+  // PATTERNS DE DÉTECTION
+  // ============================================================================
+
+  const PATTERNS = {
+    redFlags: {
+      critical: [
+        { pattern: /paiement\s*(requis|nécessaire|obligatoire)/i, impact: -40, label: "Paiement requis" },
+        { pattern: /frais\s*(de\s*)?(inscription|formation|dossier)/i, impact: -40, label: "Frais demandés" },
+        { pattern: /investissement\s*(initial|de\s*départ)/i, impact: -40, label: "Investissement demandé" },
+        { pattern: /acheter?\s*(le\s*)?(kit|stock|matériel)/i, impact: -35, label: "Achat obligatoire" },
+        { pattern: /gagn(er|ez)\s*(jusqu'?à\s*)?\d{4,}\s*€?\s*(par|\/)\s*(jour|semaine)/i, impact: -35, label: "Gains irréalistes" },
+        { pattern: /devenez?\s*(riche|millionnaire)/i, impact: -40, label: "Promesse enrichissement" },
+        { pattern: /pas\s*(d'?|de\s*)entretien/i, impact: -30, label: "Sans entretien" },
+        { pattern: /parrain(age|er)|filleul|mlm|marketing\s*(de\s*)?réseau/i, impact: -35, label: "Structure MLM" }
+      ],
+      high: [
+        { pattern: /revenu\s*(passif|illimité|garanti)/i, impact: -25, label: "Revenu garanti" },
+        { pattern: /sans\s*(effort|travail|compétence)/i, impact: -25, label: "Sans effort" },
+        { pattern: /embauche\s*(immédiate|garantie)/i, impact: -20, label: "Embauche immédiate" },
+        { pattern: /whatsapp|telegram\s*(pour|uniquement)/i, impact: -20, label: "Contact messagerie" },
+        { pattern: /crypto|bitcoin|nft|forex/i, impact: -20, label: "Crypto suspect" }
+      ],
+      medium: [
+        { pattern: /@(gmail|yahoo|hotmail|outlook)\.(com|fr)/i, impact: -10, label: "Email personnel" },
+        { pattern: /urgent\s*!|!!!+/i, impact: -8, label: "Urgence excessive" },
+        { pattern: /vivier|constitution\s*(de\s*)?base/i, impact: -12, label: "Constitution vivier" }
+      ]
+    },
+
+    greenFlags: {
+      high: [
+        { pattern: /convention\s*collective|ccn\s*\d+/i, impact: 12, label: "Convention collective" },
+        { pattern: /n°?\s*siret|siret\s*:\s*\d/i, impact: 10, label: "SIRET" },
+        { pattern: /processus\s*(de\s*)?recrutement/i, impact: 10, label: "Processus décrit" }
+      ],
+      medium: [
+        { pattern: /cdi\s*(temps\s*plein)?/i, impact: 8, label: "CDI" },
+        { pattern: /mutuelle|complémentaire\s*santé/i, impact: 6, label: "Mutuelle" },
+        { pattern: /tickets?\s*restaurant|carte\s*resto/i, impact: 5, label: "Tickets resto" },
+        { pattern: /13(ème|e)\s*mois/i, impact: 7, label: "13ème mois" },
+        { pattern: /rtt/i, impact: 5, label: "RTT" },
+        { pattern: /participation|intéressement/i, impact: 6, label: "Participation" },
+        { pattern: /comité\s*(d'?)?entreprise|ce\b|cse\b/i, impact: 4, label: "CE/CSE" },
+        { pattern: /compte\s*épargne/i, impact: 4, label: "CET" },
+        { pattern: /formation\s*(interne|continue|sur\s*place)/i, impact: 5, label: "Formation" }
+      ],
+      low: [
+        { pattern: /télétravail/i, impact: 3, label: "Télétravail" },
+        { pattern: /équipe\s*(dynamique|soudée)/i, impact: 2, label: "Équipe" }
+      ]
+    },
+
+    // Patterns diplômes
+    diplomas: {
+      'cap_bep': /cap\/?bep|certificat\s*d'?aptitude|brevet\s*d'?étude/i,
+      'bac': /\bbac\b(?!\+)|niveau\s*bac\b|baccalauréat/i,
+      'bac2': /bac\s*\+?\s*2|bts|dut|deug/i,
+      'bac3': /bac\s*\+?\s*3|licence|bachelor|deust/i,
+      'bac5': /bac\s*\+?\s*5|master|ingénieur|école\s*de\s*commerce|diplôme\s*d'?état/i,
+      'bac8': /bac\s*\+?\s*8|doctorat|phd|thèse/i
+    },
+
+    // Patterns expérience
+    experience: {
+      'debutant': /débutant|sans\s*expérience|première\s*expérience|junior/i,
+      'exp_1_2': /1\s*[-àa]\s*2\s*ans?|1\s*an\s*d'?exp|2\s*ans?\s*d'?exp/i,
+      'exp_3_5': /3\s*[-àa]\s*5\s*ans?|[345]\s*ans?\s*d'?exp/i,
+      'exp_5_10': /5\s*[-àa]\s*10\s*ans?|[56789]\s*ans?\s*d'?exp|environ\s*5\s*ans/i,
+      'exp_10_plus': /10\s*ans?\s*(et\s*plus|minimum|\+)|1[0-9]\s*ans?\s*d'?exp|\+\s*10\s*ans/i
+    }
+  };
+
+  // ============================================================================
+  // CLASSIFICATIONS
+  // ============================================================================
+
+  const CLASSIFICATIONS = {
+    EXCELLENT: { code: 'EXCELLENT', label: 'Excellente', color: '#059669', bgColor: '#d1fae5', minScore: 85 },
+    TRES_BONNE: { code: 'TRES_BONNE', label: 'Très bonne', color: '#16a34a', bgColor: '#dcfce7', minScore: 75 },
+    BONNE: { code: 'BONNE', label: 'Bonne', color: '#65a30d', bgColor: '#ecfccb', minScore: 65 },
+    CORRECTE: { code: 'CORRECTE', label: 'Correcte', color: '#0d9488', bgColor: '#ccfbf1', minScore: 55 },
+    PASSABLE: { code: 'PASSABLE', label: 'Passable', color: '#ca8a04', bgColor: '#fef9c3', minScore: 45 },
+    MEDIOCRE: { code: 'MEDIOCRE', label: 'Médiocre', color: '#d97706', bgColor: '#fef3c7', minScore: 35 },
+    MAUVAISE: { code: 'MAUVAISE', label: 'Mauvaise', color: '#ea580c', bgColor: '#ffedd5', minScore: 25 },
+    A_EVITER: { code: 'A_EVITER', label: 'À éviter', color: '#dc2626', bgColor: '#fee2e2', minScore: 15 },
+    DANGEREUSE: { code: 'DANGEREUSE', label: 'Dangereuse', color: '#991b1b', bgColor: '#fecaca', minScore: 0 }
+  };
+
+  // ============================================================================
+  // ANALYSE DIPLÔME ET PROFIL
+  // ============================================================================
+
+  function detectDiploma(text) {
+    for (const [level, pattern] of Object.entries(PATTERNS.diplomas)) {
+      if (pattern.test(text)) return level;
+    }
+    return null;
+  }
+
+  function detectExperience(text) {
+    if (PATTERNS.experience.exp_10_plus.test(text)) return 12;
+    if (PATTERNS.experience.exp_5_10.test(text)) return 7;
+    if (PATTERNS.experience.exp_3_5.test(text)) return 4;
+    if (PATTERNS.experience.exp_1_2.test(text)) return 1.5;
+    if (PATTERNS.experience.debutant.test(text)) return 0;
+
+    const match = text.match(/(\d+)\s*(?:ans?|années?)\s*(?:d'?)?(?:exp|minimum)/i);
+    if (match) return parseInt(match[1]);
+
+    return null;
+  }
+
+  function detectSector(text) {
+    for (const [sector, data] of Object.entries(MARKET_DATA.sectors)) {
+      if (data.keywords && data.keywords.test(text)) return sector;
+    }
+    return 'default';
+  }
+
+  function detectLocation(text) {
+    const lowerText = text.toLowerCase();
+    for (const [loc, multiplier] of Object.entries(MARKET_DATA.locations)) {
+      if (lowerText.includes(loc)) return { name: loc, multiplier };
+    }
+    // Chercher les codes postaux
+    const cp = text.match(/\b(75|77|78|91|92|93|94|95)\d{3}\b/);
+    if (cp) {
+      const dept = cp[1];
+      return { name: dept, multiplier: MARKET_DATA.locations[dept] || 1.0 };
+    }
+    return { name: 'province', multiplier: MARKET_DATA.locations.default };
+  }
+
+  function extractSalary(text) {
+    // Format: XX XXX à XX XXX €
+    let match = text.match(/(\d{1,2})\s*(\d{3})\s*(?:€|euros?)?\s*[-àa]\s*(\d{1,2})\s*(\d{3})\s*(?:€|euros?)/i);
+    if (match) {
+      const min = parseInt(match[1] + match[2]);
+      const max = parseInt(match[3] + match[4]);
+      return { min, max, avg: (min + max) / 2, type: 'annual' };
+    }
+
+    // Format: XX k à XX k
+    match = text.match(/(\d{2,3})\s*k\s*€?\s*[-àa]\s*(\d{2,3})\s*k/i);
+    if (match) {
+      const min = parseInt(match[1]) * 1000;
+      const max = parseInt(match[2]) * 1000;
+      return { min, max, avg: (min + max) / 2, type: 'annual' };
+    }
+
+    // Format: X XXX € par mois
+    match = text.match(/(\d{1,2})\s*(\d{3})\s*(?:€|euros?)\s*(?:par|\/)\s*mois/i);
+    if (match) {
+      const monthly = parseInt(match[1] + match[2]);
+      const annual = monthly * 12;
+      return { min: annual * 0.95, max: annual * 1.05, avg: annual, type: 'monthly' };
+    }
+
+    // Format: à partir de X XXX €
+    match = text.match(/(?:à\s*partir\s*de|minimum)\s*(\d{1,2})\s*(\d{3})\s*(?:€|euros?)/i);
+    if (match) {
+      const base = parseInt(match[1] + match[2]);
+      return { min: base, max: base * 1.2, avg: base * 1.1, type: 'minimum' };
+    }
+
+    // Format horaire: XX,XX € de l'heure
+    match = text.match(/(\d{1,2})[,.](\d{2})\s*(?:€|euros?)\s*(?:de\s*l'?heure|\/h)/i);
+    if (match) {
+      const hourly = parseFloat(match[1] + '.' + match[2]);
+      const annual = hourly * 35 * 52; // 35h/semaine, 52 semaines
+      return { min: annual * 0.9, max: annual * 1.1, avg: annual, type: 'hourly', hourlyRate: hourly };
+    }
+
+    return null;
+  }
+
+  // ============================================================================
+  // CALCULS DE SCORES
+  // ============================================================================
+
+  /**
+   * Score de Légitimité (L) - Base 75, modifié par red/green flags
+   */
+  function calculateLegitimacyScore(text) {
+    let score = 75;
+    const redFlags = [];
+    const greenFlags = [];
+
+    for (const severity of ['critical', 'high', 'medium']) {
+      for (const flag of PATTERNS.redFlags[severity]) {
+        if (flag.pattern.test(text)) {
+          score += flag.impact;
+          redFlags.push({ ...flag, severity });
+        }
+      }
+    }
+
+    for (const level of ['high', 'medium', 'low']) {
+      for (const flag of PATTERNS.greenFlags[level]) {
+        if (flag.pattern.test(text)) {
+          score += flag.impact;
+          greenFlags.push({ ...flag, level });
+        }
+      }
+    }
+
+    return {
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      redFlags,
+      greenFlags,
+      hasCriticalFlags: redFlags.some(f => f.severity === 'critical')
+    };
+  }
+
+  /**
+   * Score Marché (M) - Croisement linéaire Diplôme × Expérience × Secteur × Localisation
+   * Formule: SalaireAttendu = BaseDiplôme × CoefExp × CoefSecteur × CoefLoc
+   * Score = f(SalaireOffert / SalaireAttendu)
+   */
+  function calculateMarketScore(text, salary, diploma, experience, sector, location) {
+    const details = [];
+    const warnings = [];
+    let score = 50;
+
+    // Salaire attendu selon le diplôme
+    const diplomaData = diploma ? MARKET_DATA.salaryByDiploma[diploma] : MARKET_DATA.salaryByDiploma['bac'];
+    let expectedSalary = diplomaData.median;
+
+    // Application du coefficient d'expérience (interpolation linéaire)
+    if (experience !== null) {
+      const expYears = Math.min(20, Math.max(0, experience));
+      const expKeys = Object.keys(MARKET_DATA.experienceBonus).map(Number).sort((a, b) => a - b);
+
+      let lowerKey = 0, upperKey = 20;
+      for (let i = 0; i < expKeys.length; i++) {
+        if (expKeys[i] <= expYears) lowerKey = expKeys[i];
+        if (expKeys[i] >= expYears && upperKey === 20) upperKey = expKeys[i];
+      }
+
+      const lowerBonus = MARKET_DATA.experienceBonus[lowerKey];
+      const upperBonus = MARKET_DATA.experienceBonus[upperKey];
+      const ratio = upperKey === lowerKey ? 0 : (expYears - lowerKey) / (upperKey - lowerKey);
+      const expCoef = lowerBonus + ratio * (upperBonus - lowerBonus);
+
+      expectedSalary *= expCoef;
+      details.push(`Exp: ${expYears} ans (×${expCoef.toFixed(2)})`);
+    }
+
+    // Coefficient secteur
+    const sectorData = MARKET_DATA.sectors[sector];
+    expectedSalary *= sectorData.coef;
+    if (sectorData.coef !== 1.0) {
+      details.push(`Secteur ${sector}: ×${sectorData.coef}`);
+    }
+
+    // Coefficient localisation
+    expectedSalary *= location.multiplier;
+    if (location.multiplier !== 1.0) {
+      details.push(`Loc: ×${location.multiplier}`);
+    }
+
+    const expectedMin = expectedSalary * 0.85;
+    const expectedMax = expectedSalary * 1.15;
+
+    if (salary) {
+      const offeredAvg = salary.avg;
+
+      // Score linéaire basé sur l'écart
+      // Si salaire = attendu: 70 points
+      // Si salaire > max attendu +20%: 90 points
+      // Si salaire < min attendu -20%: 30 points
+      if (offeredAvg >= expectedSalary) {
+        const bonus = Math.min(30, ((offeredAvg - expectedSalary) / expectedSalary) * 100);
+        score = 70 + bonus;
+
+        if (offeredAvg > expectedMax * 1.3) {
+          warnings.push("Salaire anormalement élevé");
+          score -= 15;
+        } else if (offeredAvg > expectedMax) {
+          details.push(`+${Math.round((offeredAvg / expectedSalary - 1) * 100)}% vs marché`);
+        }
+      } else {
+        const penalty = Math.min(40, ((expectedSalary - offeredAvg) / expectedSalary) * 100);
+        score = 70 - penalty;
+
+        if (offeredAvg < expectedMin * 0.75) {
+          warnings.push(`Salaire très bas (-${Math.round((1 - offeredAvg / expectedSalary) * 100)}%)`);
+        }
+      }
+
+      details.push(`Offert: ${Math.round(salary.min / 1000)}k-${Math.round(salary.max / 1000)}k€`);
+      details.push(`Attendu: ${Math.round(expectedMin / 1000)}k-${Math.round(expectedMax / 1000)}k€`);
+    } else {
+      score = 45;
+      warnings.push("Salaire non précisé");
+    }
+
+    // Bonus avantages (max +15)
+    let benefitsScore = 0;
+    if (/mutuelle/i.test(text)) benefitsScore += 3;
+    if (/tickets?\s*restaurant/i.test(text)) benefitsScore += 2;
+    if (/13(ème|e)\s*mois/i.test(text)) benefitsScore += 4;
+    if (/rtt/i.test(text)) benefitsScore += 3;
+    if (/participation|intéressement/i.test(text)) benefitsScore += 3;
+    score += Math.min(15, benefitsScore);
+
+    return {
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      salary,
+      expectedSalary: { min: expectedMin, max: expectedMax, median: expectedSalary },
+      details,
+      warnings
+    };
+  }
+
+  /**
+   * Score Qualité Rédactionnelle (Q)
+   */
+  function calculateQualityScore(jobData, text) {
+    let score = 0;
+    const criteria = [];
+    const warnings = [];
+
+    // 1. Longueur description (max 30)
+    const descLen = (jobData.description || '').length;
+    if (descLen > 3000) { score += 30; criteria.push("Description très complète"); }
+    else if (descLen > 1500) { score += 25; criteria.push("Description détaillée"); }
+    else if (descLen > 800) { score += 18; criteria.push("Description correcte"); }
+    else if (descLen > 300) { score += 10; }
+    else { score += 5; warnings.push("Description trop courte"); }
+
+    // 2. Structure (max 25)
+    const sections = [
+      { pattern: /missions?\s*:/i, label: "Missions" },
+      { pattern: /profil\s*(recherché)?\s*:/i, label: "Profil" },
+      { pattern: /compétences?\s*(requises?)?\s*:/i, label: "Compétences" },
+      { pattern: /formation\s*:/i, label: "Formation" },
+      { pattern: /expérience\s*:/i, label: "Expérience" },
+      { pattern: /avantages?\s*:/i, label: "Avantages" },
+      { pattern: /rémunération\s*:/i, label: "Rémunération" },
+      { pattern: /environnement|lieu\s*de\s*travail/i, label: "Environnement" }
+    ];
+    const foundSections = sections.filter(s => s.pattern.test(text));
+    score += Math.min(25, foundSections.length * 4);
+    if (foundSections.length >= 4) {
+      criteria.push(`${foundSections.length} sections structurées`);
+    }
+
+    // 3. Informations entreprise (max 15)
+    if (jobData.company && jobData.company.length > 2) {
+      score += 5;
+      criteria.push("Entreprise identifiée");
+    } else {
+      warnings.push("Entreprise non identifiée");
+    }
+    if (/\d+\s*(collaborateurs?|salariés?|employés?)/i.test(text)) score += 4;
+    if (/créée?\s*en\s*\d{4}/i.test(text)) score += 3;
+    if (/siret|siren/i.test(text)) score += 3;
+
+    // 4. Mise en forme (max 15)
+    if (/[-•●◦]\s*\w+/g.test(text)) { score += 5; criteria.push("Listes à puces"); }
+    const capsRatio = (text.match(/[A-Z]/g) || []).length / Math.max(1, text.length);
+    if (capsRatio < 0.15 && capsRatio > 0.02) score += 5; // Pas trop de majuscules
+    if (!/!!!|\?\?\?|€€€/g.test(text)) score += 5; // Pas de ponctuation excessive
+
+    // 5. Clarté et précision (max 15)
+    if (/horaires?\s*:/i.test(text)) score += 3;
+    if (/lieu\s*(du\s*)?poste|localisation/i.test(text)) score += 3;
+    if (/type\s*d'?emploi|contrat/i.test(text)) score += 3;
+    if (/processus|étapes?\s*(de\s*)?recrutement/i.test(text)) score += 4;
+    if (/contact|postuler/i.test(text)) score += 2;
+
+    return {
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      criteria,
+      warnings,
+      sections: foundSections.map(s => s.label)
+    };
+  }
+
+  /**
+   * Score Profil (P) - Cohérence diplôme/expérience demandés
+   */
+  function calculateProfileScore(text, diploma, experience) {
+    let score = 70;
+    const details = [];
+    const warnings = [];
+
+    // Évaluation de la clarté des exigences
+    if (diploma) {
+      score += 10;
+      const diplomaLabels = {
+        'cap_bep': 'CAP/BEP',
+        'bac': 'Bac',
+        'bac2': 'Bac+2',
+        'bac3': 'Bac+3',
+        'bac5': 'Bac+5',
+        'bac8': 'Doctorat'
+      };
+      details.push(`Diplôme: ${diplomaLabels[diploma] || diploma}`);
+    } else {
+      details.push("Diplôme non précisé");
+    }
+
+    if (experience !== null) {
+      score += 10;
+      details.push(`Expérience: ${experience} an${experience > 1 ? 's' : ''}`);
+    } else {
+      details.push("Expérience non précisée");
+    }
+
+    // Vérification cohérence diplôme/expérience
+    if (diploma && experience !== null) {
+      // Senior avec diplôme de base: OK si expérience compense
+      if (diploma === 'cap_bep' && experience < 3) {
+        // Cohérent
+      } else if (diploma === 'bac5' && experience > 10) {
+        score += 5;
+        details.push("Profil expérimenté cohérent");
+      }
+
+      // Incohérence: Bac+5 demandé pour débutant avec salaire bas
+      if (diploma === 'bac5' && experience === 0) {
+        // Vérifier si c'est un stage ou un premier emploi
+        if (!/stage|graduate|jeune\s*diplômé/i.test(text)) {
+          warnings.push("Bac+5 pour débutant - vérifier");
+        }
+      }
+    }
+
+    // Compétences mentionnées
+    const skills = text.match(/compétences?\s*(?:requises?|demandées?)?\s*:([^.]+)/i);
+    if (skills) {
+      score += 5;
+      details.push("Compétences détaillées");
+    }
+
+    // Permis/certifications
+    if (/permis\s*[ABCDEabcde]/i.test(text)) {
+      details.push("Permis requis");
+    }
+    if (/habilitation|certification|caces|sst|siapp/i.test(text)) {
+      score += 3;
+      details.push("Certifications mentionnées");
+    }
+
+    return {
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      details,
+      warnings,
+      diploma,
+      experience
+    };
+  }
+
+  /**
+   * Score Cohérence (C) - Croisements multiples
+   */
+  function calculateCoherenceScore(text, salary, diploma, experience, sector) {
+    let score = 100;
+    const issues = [];
+
+    // 1. Cohérence salaire/diplôme
+    if (salary && diploma) {
+      const expectedRange = MARKET_DATA.salaryByDiploma[diploma];
+      if (salary.avg < expectedRange.min * 0.7) {
+        score -= 20;
+        issues.push(`Salaire bas pour ${diploma.toUpperCase()}`);
+      }
+      if (salary.avg > expectedRange.max * 2) {
+        score -= 15;
+        issues.push("Salaire anormalement élevé");
+      }
+    }
+
+    // 2. Cohérence expérience/titre
+    if (/senior|expert|confirmé/i.test(text)) {
+      if (experience !== null && experience < 3) {
+        score -= 20;
+        issues.push("Senior avec peu d'expérience");
+      }
+    }
+    if (/junior|débutant/i.test(text)) {
+      if (experience !== null && experience > 5) {
+        score -= 15;
+        issues.push("Junior avec expérience senior");
+      }
+    }
+
+    // 3. Cohérence télétravail/poste
+    if (/100\s*%\s*(remote|télétravail)/i.test(text)) {
+      if (/terrain|chantier|maintenance|électricien|technicien|aide.domicile|magasinier/i.test(text)) {
+        score -= 25;
+        issues.push("Télétravail impossible pour ce poste");
+      }
+    }
+
+    // 4. Cohérence type contrat/durée
+    if (/cdi/i.test(text) && /durée\s*déterminée|temporaire/i.test(text)) {
+      score -= 15;
+      issues.push("Confusion CDI/CDD");
+    }
+
+    // 5. Cohérence secteur/compétences
+    if (sector === 'tech' && !/\b(java|python|php|javascript|react|node|sql|git|agile|scrum)\b/i.test(text)) {
+      if (/développeur|engineer|devops/i.test(text)) {
+        score -= 10;
+        issues.push("Stack technique non précisée");
+      }
+    }
+
+    return {
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      issues,
+      warnings: issues
+    };
+  }
+
+  // ============================================================================
+  // CLASSIFICATION ET RECOMMANDATIONS
+  // ============================================================================
+
+  function determineClassification(score, hasCriticalFlags) {
+    if (hasCriticalFlags) {
+      return { ...CLASSIFICATIONS.DANGEREUSE, reason: "Arnaque probable" };
+    }
+    for (const classification of Object.values(CLASSIFICATIONS)) {
+      if (score >= classification.minScore) {
+        return { ...classification };
+      }
+    }
+    return CLASSIFICATIONS.DANGEREUSE;
+  }
+
+  function generateRecommendations(classification, scores) {
+    const recs = [];
+
+    switch (classification.code) {
+      case 'EXCELLENT':
+      case 'TRES_BONNE':
+        recs.push("Postulez rapidement");
+        if (scores.market.score > 75) recs.push("Conditions attractives");
+        break;
+      case 'BONNE':
+      case 'CORRECTE':
+        recs.push("Offre intéressante");
+        if (scores.market.score < 50) recs.push("Négociez le salaire");
+        break;
+      case 'PASSABLE':
+      case 'MEDIOCRE':
+        recs.push("Vérifiez l'entreprise");
+        recs.push("Recherchez des avis");
+        break;
+      case 'MAUVAISE':
+      case 'A_EVITER':
+        recs.push("Offre déconseillée");
+        if (scores.legitimacy.redFlags.length > 0) recs.push("Alertes détectées");
+        break;
+      case 'DANGEREUSE':
+        recs.push("Ne pas postuler");
+        recs.push("Signalez cette offre");
+        break;
+    }
+
+    return recs.slice(0, 3);
+  }
+
+  // ============================================================================
+  // API PUBLIQUE
+  // ============================================================================
+
+  return {
+    evaluate(jobData, context = {}) {
+      const text = `${jobData.title || ''} ${jobData.company || ''} ${jobData.location || ''} ${jobData.salary || ''} ${jobData.description || ''}`;
+
+      // Détections
+      const diploma = detectDiploma(text);
+      const experience = detectExperience(text);
+      const sector = detectSector(text);
+      const location = detectLocation(jobData.location || text);
+      const salary = extractSalary(text);
+
+      // Calcul des 5 scores
+      const legitimacy = calculateLegitimacyScore(text.toLowerCase());
+      const market = calculateMarketScore(text.toLowerCase(), salary, diploma, experience, sector, location);
+      const quality = calculateQualityScore(jobData, text);
+      const profile = calculateProfileScore(text, diploma, experience);
+      const coherence = calculateCoherenceScore(text, salary, diploma, experience, sector);
+
+      // Score final pondéré
+      const pertinenceScore = Math.round(
+        CONFIG.weights.legitimacy * legitimacy.score +
+        CONFIG.weights.market * market.score +
+        CONFIG.weights.quality * quality.score +
+        CONFIG.weights.profile * profile.score +
+        CONFIG.weights.coherence * coherence.score
+      );
+
+      const classification = determineClassification(pertinenceScore, legitimacy.hasCriticalFlags);
+      const recommendations = generateRecommendations(classification, { legitimacy, market, quality, profile, coherence });
+
+      // Collecte de tous les warnings
+      const allWarnings = [
+        ...market.warnings,
+        ...quality.warnings,
+        ...profile.warnings,
+        ...coherence.warnings
+      ];
+
+      return {
+        pertinenceScore,
+        classification,
+
+        // Détections
+        detected: { diploma, experience, sector, location: location.name, salary },
+
+        // Scores détaillés
+        scores: {
+          legitimacy: { score: legitimacy.score, redFlags: legitimacy.redFlags, greenFlags: legitimacy.greenFlags },
+          market: { score: market.score, details: market.details, warnings: market.warnings, expected: market.expectedSalary },
+          quality: { score: quality.score, criteria: quality.criteria, sections: quality.sections, warnings: quality.warnings },
+          profile: { score: profile.score, details: profile.details, warnings: profile.warnings },
+          coherence: { score: coherence.score, issues: coherence.issues }
+        },
+
+        // Signaux
+        signals: {
+          redFlags: legitimacy.redFlags,
+          greenFlags: legitimacy.greenFlags,
+          warnings: allWarnings
+        },
+
+        recommendations
+      };
+    },
+
+    CLASSIFICATIONS,
+    MARKET_DATA
+  };
+})();
+
+// ============================================================================
+// MODULE ANALYSEUR DE MARCHÉ SALARIAL v1.0
+// Projections, négociations, évolutions sur 1-3-5-10 ans
+// ============================================================================
+
+const FJD_SalaryMarketAnalyzer = (function() {
+  'use strict';
+
+  // Données marché France 2024-2025
+  const MARKET_DATA = {
+    // Salaires médians par niveau d'expérience et secteur (brut annuel)
+    salaryGrid: {
+      tech: {
+        junior: { min: 35000, median: 40000, max: 48000 },
+        confirmed: { min: 42000, median: 50000, max: 60000 },
+        senior: { min: 52000, median: 62000, max: 75000 },
+        expert: { min: 65000, median: 78000, max: 95000 },
+        lead: { min: 75000, median: 90000, max: 120000 }
+      },
+      finance: {
+        junior: { min: 32000, median: 38000, max: 45000 },
+        confirmed: { min: 40000, median: 48000, max: 58000 },
+        senior: { min: 50000, median: 60000, max: 75000 },
+        expert: { min: 62000, median: 75000, max: 95000 },
+        lead: { min: 70000, median: 85000, max: 110000 }
+      },
+      industrie: {
+        junior: { min: 28000, median: 33000, max: 40000 },
+        confirmed: { min: 35000, median: 42000, max: 50000 },
+        senior: { min: 44000, median: 52000, max: 62000 },
+        expert: { min: 52000, median: 62000, max: 75000 },
+        lead: { min: 60000, median: 72000, max: 90000 }
+      },
+      commerce: {
+        junior: { min: 25000, median: 30000, max: 36000 },
+        confirmed: { min: 32000, median: 38000, max: 46000 },
+        senior: { min: 40000, median: 48000, max: 58000 },
+        expert: { min: 48000, median: 58000, max: 72000 },
+        lead: { min: 55000, median: 68000, max: 85000 }
+      },
+      sante: {
+        junior: { min: 26000, median: 32000, max: 38000 },
+        confirmed: { min: 34000, median: 40000, max: 48000 },
+        senior: { min: 42000, median: 50000, max: 60000 },
+        expert: { min: 50000, median: 60000, max: 75000 },
+        lead: { min: 58000, median: 70000, max: 90000 }
+      },
+      default: {
+        junior: { min: 26000, median: 32000, max: 38000 },
+        confirmed: { min: 34000, median: 42000, max: 50000 },
+        senior: { min: 44000, median: 52000, max: 62000 },
+        expert: { min: 52000, median: 62000, max: 75000 },
+        lead: { min: 60000, median: 72000, max: 90000 }
+      }
+    },
+
+    // Évolution salariale annuelle moyenne par statut (%)
+    annualGrowth: {
+      junior: { min: 5, typical: 8, max: 12, withObjectives: 15 },
+      confirmed: { min: 4, typical: 6, max: 10, withObjectives: 12 },
+      senior: { min: 3, typical: 5, max: 8, withObjectives: 10 },
+      expert: { min: 2, typical: 4, max: 6, withObjectives: 8 },
+      lead: { min: 2, typical: 3, max: 5, withObjectives: 7 }
+    },
+
+    // Marge de négociation à l'embauche (%)
+    negotiationMargin: {
+      junior: { min: 0, typical: 5, max: 10 },
+      confirmed: { min: 5, typical: 10, max: 15 },
+      senior: { min: 8, typical: 12, max: 18 },
+      expert: { min: 10, typical: 15, max: 22 },
+      lead: { min: 12, typical: 18, max: 25 }
+    },
+
+    // Coefficients localisation
+    locationMultiplier: {
+      paris: 1.20,
+      idf: 1.12,
+      lyon: 1.08,
+      marseille: 1.03,
+      bordeaux: 1.05,
+      toulouse: 1.04,
+      nantes: 1.04,
+      lille: 1.02,
+      nice: 1.05,
+      strasbourg: 1.02,
+      province: 0.92
+    },
+
+    // Charges sociales salariales France 2024 (approximatif)
+    socialCharges: {
+      cadre: 0.25,      // ~25% du brut
+      nonCadre: 0.22,   // ~22% du brut
+      apprenti: 0.12    // ~12% du brut
+    },
+
+    // Tranches impôt sur le revenu 2024 (par part fiscale)
+    taxBrackets: [
+      { limit: 11294, rate: 0 },
+      { limit: 28797, rate: 0.11 },
+      { limit: 82341, rate: 0.30 },
+      { limit: 177106, rate: 0.41 },
+      { limit: Infinity, rate: 0.45 }
+    ]
+  };
+
+  // Déterminer le statut selon l'expérience
+  function determineStatus(experienceYears) {
+    if (experienceYears === null || experienceYears === undefined) return 'confirmed';
+    if (experienceYears <= 2) return 'junior';
+    if (experienceYears <= 5) return 'confirmed';
+    if (experienceYears <= 10) return 'senior';
+    if (experienceYears <= 15) return 'expert';
+    return 'lead';
+  }
+
+  // Calculer l'impôt annuel (simplifiée, 1 part fiscale)
+  function calculateAnnualTax(netAnnual, parts = 1) {
+    const taxableIncome = netAnnual / parts;
+    let tax = 0;
+    let previousLimit = 0;
+
+    for (const bracket of MARKET_DATA.taxBrackets) {
+      if (taxableIncome > previousLimit) {
+        const taxableInBracket = Math.min(taxableIncome, bracket.limit) - previousLimit;
+        tax += taxableInBracket * bracket.rate;
+      }
+      previousLimit = bracket.limit;
+      if (taxableIncome <= bracket.limit) break;
+    }
+
+    return Math.round(tax * parts);
+  }
+
+  // Calculer les conversions brut → net → net après impôt
+  function calculateSalaryBreakdown(brutAnnual, isCadre = true, taxParts = 1) {
+    const chargeRate = isCadre ? MARKET_DATA.socialCharges.cadre : MARKET_DATA.socialCharges.nonCadre;
+
+    const netAnnual = Math.round(brutAnnual * (1 - chargeRate));
+    const netMonthly = Math.round(netAnnual / 12);
+    const brutMonthly = Math.round(brutAnnual / 12);
+
+    const annualTax = calculateAnnualTax(netAnnual, taxParts);
+    const monthlyTax = Math.round(annualTax / 12);
+
+    const netAfterTaxAnnual = netAnnual - annualTax;
+    const netAfterTaxMonthly = Math.round(netAfterTaxAnnual / 12);
+
+    return {
+      brut: {
+        annual: brutAnnual,
+        monthly: brutMonthly
+      },
+      net: {
+        annual: netAnnual,
+        monthly: netMonthly
+      },
+      tax: {
+        annual: annualTax,
+        monthly: monthlyTax,
+        effectiveRate: netAnnual > 0 ? Math.round((annualTax / netAnnual) * 100) : 0
+      },
+      netAfterTax: {
+        annual: netAfterTaxAnnual,
+        monthly: netAfterTaxMonthly
+      },
+      charges: {
+        annual: brutAnnual - netAnnual,
+        monthly: brutMonthly - netMonthly,
+        rate: Math.round(chargeRate * 100)
+      }
+    };
+  }
+
+  // Calculer les projections sur 1, 3, 5, 10 ans
+  function calculateProjections(baseSalary, status, withObjectives = false) {
+    const growth = MARKET_DATA.annualGrowth[status];
+    const growthRate = withObjectives ? growth.withObjectives : growth.typical;
+
+    const projections = {};
+    const years = [1, 3, 5, 10];
+
+    for (const year of years) {
+      // Formule: Salaire × (1 + taux)^années
+      // Avec progression de statut après certains jalons
+      let currentStatus = status;
+      let accumulatedGrowth = 1;
+
+      for (let y = 1; y <= year; y++) {
+        // Évolution du statut
+        if (status === 'junior' && y >= 3) currentStatus = 'confirmed';
+        else if (status === 'confirmed' && y >= 3) currentStatus = 'senior';
+        else if (status === 'senior' && y >= 5) currentStatus = 'expert';
+
+        const currentGrowth = MARKET_DATA.annualGrowth[currentStatus];
+        const rate = withObjectives ? currentGrowth.withObjectives : currentGrowth.typical;
+        accumulatedGrowth *= (1 + rate / 100);
+      }
+
+      const projectedSalary = Math.round(baseSalary * accumulatedGrowth);
+      const statusAtYear = currentStatus;
+
+      projections[`year${year}`] = {
+        year,
+        status: statusAtYear,
+        salary: calculateSalaryBreakdown(projectedSalary),
+        growthFromStart: Math.round((accumulatedGrowth - 1) * 100),
+        growthAbsolute: projectedSalary - baseSalary
+      };
+    }
+
+    return projections;
+  }
+
+  // Calculer la marge de négociation
+  function calculateNegotiationRange(offeredSalary, status, sector, location) {
+    const margin = MARKET_DATA.negotiationMargin[status];
+    const sectorData = MARKET_DATA.salaryGrid[sector] || MARKET_DATA.salaryGrid.default;
+    const statusData = sectorData[status];
+    const locMultiplier = MARKET_DATA.locationMultiplier[location] || MARKET_DATA.locationMultiplier.province;
+
+    // Ajuster le marché avec la localisation
+    const marketMin = Math.round(statusData.min * locMultiplier);
+    const marketMedian = Math.round(statusData.median * locMultiplier);
+    const marketMax = Math.round(statusData.max * locMultiplier);
+
+    // Position de l'offre par rapport au marché
+    let positionVsMarket = 'below';
+    let positionPercent = 0;
+
+    if (offeredSalary < marketMin) {
+      positionVsMarket = 'below';
+      positionPercent = Math.round((1 - offeredSalary / marketMin) * 100);
+    } else if (offeredSalary < marketMedian) {
+      positionVsMarket = 'low';
+      positionPercent = Math.round(((offeredSalary - marketMin) / (marketMedian - marketMin)) * 50);
+    } else if (offeredSalary < marketMax) {
+      positionVsMarket = 'good';
+      positionPercent = 50 + Math.round(((offeredSalary - marketMedian) / (marketMax - marketMedian)) * 50);
+    } else {
+      positionVsMarket = 'excellent';
+      positionPercent = 100;
+    }
+
+    // Calcul des salaires négociables
+    const minNegotiated = Math.round(offeredSalary * (1 + margin.min / 100));
+    const typicalNegotiated = Math.round(offeredSalary * (1 + margin.typical / 100));
+    const maxNegotiated = Math.round(offeredSalary * (1 + margin.max / 100));
+
+    // Plafond réaliste basé sur le marché
+    const realisticMax = Math.min(maxNegotiated, Math.round(marketMax * 1.05));
+
+    return {
+      offered: offeredSalary,
+      negotiable: {
+        conservative: minNegotiated,
+        realistic: typicalNegotiated,
+        ambitious: Math.min(maxNegotiated, realisticMax),
+        ceiling: realisticMax
+      },
+      market: {
+        min: marketMin,
+        median: marketMedian,
+        max: marketMax,
+        position: positionVsMarket,
+        positionPercent
+      },
+      recommendation: positionVsMarket === 'below' ? 'Négociez fortement, offre sous le marché' :
+                      positionVsMarket === 'low' ? 'Marge de négociation possible' :
+                      positionVsMarket === 'good' ? 'Offre correcte, négociation modérée' :
+                      'Excellente offre, négociez les avantages'
+    };
+  }
+
+  // Analyse complète du marché salarial
+  function analyzeMarketSalary(params) {
+    const {
+      offeredSalary,      // Salaire brut annuel proposé
+      experienceYears,    // Années d'expérience
+      sector = 'default', // Secteur d'activité
+      location = 'province', // Localisation
+      diploma = null,     // Niveau de diplôme
+      isCadre = true,     // Statut cadre
+      taxParts = 1        // Parts fiscales
+    } = params;
+
+    const status = determineStatus(experienceYears);
+    const statusLabels = {
+      junior: 'Junior (0-2 ans)',
+      confirmed: 'Confirmé (3-5 ans)',
+      senior: 'Senior (6-10 ans)',
+      expert: 'Expert (11-15 ans)',
+      lead: 'Lead/Manager (15+ ans)'
+    };
+
+    // Calculs de base
+    const currentSalary = calculateSalaryBreakdown(offeredSalary, isCadre, taxParts);
+    const negotiation = calculateNegotiationRange(offeredSalary, status, sector, location);
+
+    // Projections standard et avec objectifs atteints
+    const projectionsStandard = calculateProjections(offeredSalary, status, false);
+    const projectionsWithObjectives = calculateProjections(offeredSalary, status, true);
+
+    // Résumé des évolutions
+    const evolutionSummary = {
+      year1: {
+        standard: projectionsStandard.year1.salary.brut.annual,
+        withObjectives: projectionsWithObjectives.year1.salary.brut.annual,
+        bonus: projectionsWithObjectives.year1.salary.brut.annual - projectionsStandard.year1.salary.brut.annual
+      },
+      year3: {
+        standard: projectionsStandard.year3.salary.brut.annual,
+        withObjectives: projectionsWithObjectives.year3.salary.brut.annual,
+        bonus: projectionsWithObjectives.year3.salary.brut.annual - projectionsStandard.year3.salary.brut.annual
+      },
+      year5: {
+        standard: projectionsStandard.year5.salary.brut.annual,
+        withObjectives: projectionsWithObjectives.year5.salary.brut.annual,
+        bonus: projectionsWithObjectives.year5.salary.brut.annual - projectionsStandard.year5.salary.brut.annual
+      },
+      year10: {
+        standard: projectionsStandard.year10.salary.brut.annual,
+        withObjectives: projectionsWithObjectives.year10.salary.brut.annual,
+        bonus: projectionsWithObjectives.year10.salary.brut.annual - projectionsStandard.year10.salary.brut.annual
+      }
+    };
+
+    return {
+      // Informations de base
+      input: {
+        offeredSalary,
+        experienceYears,
+        sector,
+        location,
+        status,
+        statusLabel: statusLabels[status],
+        isCadre,
+        taxParts
+      },
+
+      // Salaire actuel détaillé
+      current: currentSalary,
+
+      // Négociation à l'embauche
+      negotiation,
+
+      // Projections détaillées
+      projections: {
+        standard: projectionsStandard,
+        withObjectives: projectionsWithObjectives
+      },
+
+      // Résumé des évolutions
+      evolution: evolutionSummary,
+
+      // Comparaison marché
+      marketComparison: {
+        sector,
+        location,
+        statusRange: negotiation.market,
+        isCompetitive: negotiation.market.positionPercent >= 50
+      }
+    };
+  }
+
+  // Formater un montant en euros
+  function formatCurrency(amount) {
+    return new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency: 'EUR',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
+    }).format(amount);
+  }
+
+  // Générer le HTML du tableau d'analyse
+  function generateAnalysisHTML(analysis) {
+    const { current, negotiation, evolution, input } = analysis;
+
+    return `
+      <div class="fjd-salary-analysis">
+        <div class="fjd-salary-header">
+          <h4>📊 Analyse Salariale Marché</h4>
+          <span class="fjd-status-badge">${input.statusLabel}</span>
+        </div>
+
+        <div class="fjd-salary-section">
+          <h5>💰 Salaire Proposé</h5>
+          <table class="fjd-salary-table">
+            <tr>
+              <td></td>
+              <td><strong>Mensuel</strong></td>
+              <td><strong>Annuel</strong></td>
+            </tr>
+            <tr>
+              <td>Brut</td>
+              <td>${formatCurrency(current.brut.monthly)}</td>
+              <td>${formatCurrency(current.brut.annual)}</td>
+            </tr>
+            <tr>
+              <td>Net (−${current.charges.rate}%)</td>
+              <td>${formatCurrency(current.net.monthly)}</td>
+              <td>${formatCurrency(current.net.annual)}</td>
+            </tr>
+            <tr>
+              <td>Impôt (${current.tax.effectiveRate}%)</td>
+              <td>−${formatCurrency(current.tax.monthly)}</td>
+              <td>−${formatCurrency(current.tax.annual)}</td>
+            </tr>
+            <tr class="fjd-highlight">
+              <td><strong>Net après impôt</strong></td>
+              <td><strong>${formatCurrency(current.netAfterTax.monthly)}</strong></td>
+              <td><strong>${formatCurrency(current.netAfterTax.annual)}</strong></td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="fjd-salary-section">
+          <h5>🤝 Négociation à l'Embauche</h5>
+          <div class="fjd-market-position">
+            <div class="fjd-position-bar">
+              <div class="fjd-position-fill" style="width: ${negotiation.market.positionPercent}%"></div>
+              <span class="fjd-position-marker" style="left: ${negotiation.market.positionPercent}%"></span>
+            </div>
+            <div class="fjd-position-labels">
+              <span>${formatCurrency(negotiation.market.min)}</span>
+              <span>${formatCurrency(negotiation.market.median)}</span>
+              <span>${formatCurrency(negotiation.market.max)}</span>
+            </div>
+          </div>
+          <p class="fjd-recommendation">${negotiation.recommendation}</p>
+          <div class="fjd-negotiation-range">
+            <span>Cible réaliste: <strong>${formatCurrency(negotiation.negotiable.realistic)}</strong></span>
+            <span>Maximum: <strong>${formatCurrency(negotiation.negotiable.ambitious)}</strong></span>
+          </div>
+        </div>
+
+        <div class="fjd-salary-section">
+          <h5>📈 Évolution Salariale (Brut Annuel)</h5>
+          <table class="fjd-salary-table fjd-evolution-table">
+            <tr>
+              <td></td>
+              <td><strong>1 an</strong></td>
+              <td><strong>3 ans</strong></td>
+              <td><strong>5 ans</strong></td>
+              <td><strong>10 ans</strong></td>
+            </tr>
+            <tr>
+              <td>Standard</td>
+              <td>${formatCurrency(evolution.year1.standard)}</td>
+              <td>${formatCurrency(evolution.year3.standard)}</td>
+              <td>${formatCurrency(evolution.year5.standard)}</td>
+              <td>${formatCurrency(evolution.year10.standard)}</td>
+            </tr>
+            <tr class="fjd-highlight">
+              <td>Objectifs atteints</td>
+              <td>${formatCurrency(evolution.year1.withObjectives)}</td>
+              <td>${formatCurrency(evolution.year3.withObjectives)}</td>
+              <td>${formatCurrency(evolution.year5.withObjectives)}</td>
+              <td>${formatCurrency(evolution.year10.withObjectives)}</td>
+            </tr>
+            <tr class="fjd-bonus-row">
+              <td>Bonus perf.</td>
+              <td>+${formatCurrency(evolution.year1.bonus)}</td>
+              <td>+${formatCurrency(evolution.year3.bonus)}</td>
+              <td>+${formatCurrency(evolution.year5.bonus)}</td>
+              <td>+${formatCurrency(evolution.year10.bonus)}</td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="fjd-salary-section fjd-projections-detail">
+          <h5>📋 Détail Net Après Impôt (Mensuel)</h5>
+          <table class="fjd-salary-table">
+            <tr>
+              <td></td>
+              <td><strong>Aujourd'hui</strong></td>
+              <td><strong>+3 ans</strong></td>
+              <td><strong>+5 ans</strong></td>
+              <td><strong>+10 ans</strong></td>
+            </tr>
+            <tr>
+              <td>Standard</td>
+              <td>${formatCurrency(current.netAfterTax.monthly)}/mois</td>
+              <td>${formatCurrency(analysis.projections.standard.year3.salary.netAfterTax.monthly)}/mois</td>
+              <td>${formatCurrency(analysis.projections.standard.year5.salary.netAfterTax.monthly)}/mois</td>
+              <td>${formatCurrency(analysis.projections.standard.year10.salary.netAfterTax.monthly)}/mois</td>
+            </tr>
+            <tr class="fjd-highlight">
+              <td>Performance</td>
+              <td>${formatCurrency(current.netAfterTax.monthly)}/mois</td>
+              <td>${formatCurrency(analysis.projections.withObjectives.year3.salary.netAfterTax.monthly)}/mois</td>
+              <td>${formatCurrency(analysis.projections.withObjectives.year5.salary.netAfterTax.monthly)}/mois</td>
+              <td>${formatCurrency(analysis.projections.withObjectives.year10.salary.netAfterTax.monthly)}/mois</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // API publique
+  return {
+    analyze: analyzeMarketSalary,
+    calculateBreakdown: calculateSalaryBreakdown,
+    calculateTax: calculateAnnualTax,
+    determineStatus,
+    formatCurrency,
+    generateHTML: generateAnalysisHTML,
+    MARKET_DATA
+  };
+})();
+
+if (typeof window !== 'undefined') {
+  window.FJD_PertinenceAnalyzer = FJD_PertinenceAnalyzer;
+  window.FJD_SalaryMarketAnalyzer = FJD_SalaryMarketAnalyzer;
+}
