@@ -3,21 +3,62 @@
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Initialiser i18n
+  await initI18n();
+
   // Charger les statistiques
   await loadStats();
 
-  // Charger les paramètres
+  // Charger les parametres
   await loadSettings();
 
   // Charger l'analyse de l'offre actuelle
   await loadCurrentJobAnalysis();
 
-  // Événements des toggles
+  // Evenements des toggles
   setupSettingsListeners();
 
-  // Événement du bouton de réinitialisation
+  // Evenement du bouton de reinitialisation
   document.getElementById('btn-clear-stats').addEventListener('click', clearStats);
+
+  // Evenement du selecteur de langue
+  document.getElementById('language-selector').addEventListener('change', handleLanguageChange);
 });
+
+/**
+ * Initialise le systeme i18n
+ */
+async function initI18n() {
+  try {
+    const currentLang = await I18n.init();
+
+    // Mettre a jour le selecteur de langue
+    const selector = document.getElementById('language-selector');
+    selector.value = currentLang;
+
+    // Traduire la page
+    I18n.translatePage();
+  } catch (error) {
+    console.error('Erreur lors de l\'initialisation i18n:', error);
+  }
+}
+
+/**
+ * Gere le changement de langue
+ */
+async function handleLanguageChange(e) {
+  const newLang = e.target.value;
+
+  try {
+    const success = await I18n.setLanguage(newLang);
+    if (success) {
+      I18n.translatePage();
+      showFeedback(I18n.t('popup.settingSaved') + ' ✓');
+    }
+  } catch (error) {
+    console.error('Erreur lors du changement de langue:', error);
+  }
+}
 
 /**
  * Charge les statistiques depuis le storage
@@ -26,7 +67,7 @@ async function loadStats() {
   try {
     const result = await chrome.storage.local.get(['stats']);
     const stats = result.stats || { analyzed: 0, flagged: 0, critical: 0 };
-    
+
     document.getElementById('stat-analyzed').textContent = formatNumber(stats.analyzed);
     document.getElementById('stat-flagged').textContent = formatNumber(stats.flagged);
     document.getElementById('stat-critical').textContent = formatNumber(stats.critical);
@@ -36,7 +77,7 @@ async function loadStats() {
 }
 
 /**
- * Charge les paramètres
+ * Charge les parametres
  */
 async function loadSettings() {
   try {
@@ -46,13 +87,33 @@ async function loadSettings() {
       showBadges: true,
       notifyHighRisk: false
     };
-    
+
     document.getElementById('setting-auto-analyze').checked = settings.autoAnalyze;
     document.getElementById('setting-show-badges').checked = settings.showBadges;
     document.getElementById('setting-notify').checked = settings.notifyHighRisk;
   } catch (error) {
-    console.error('Erreur lors du chargement des paramètres:', error);
+    console.error('Erreur lors du chargement des parametres:', error);
   }
+}
+
+/**
+ * Cree un element de flag de maniere securisee
+ */
+function createFlagItem(flag, isRed) {
+  const li = document.createElement('li');
+  li.className = isRed ? 'flag-item flag-item--red' : 'flag-item flag-item--green';
+
+  const impactSpan = document.createElement('span');
+  impactSpan.className = 'flag-item__impact';
+  const impactValue = flag.impact || flag.score || 0;
+  impactSpan.textContent = isRed ? (impactValue > 0 ? '+' + impactValue : impactValue) : '+' + impactValue;
+
+  const labelText = document.createTextNode(' ' + flag.label);
+
+  li.appendChild(impactSpan);
+  li.appendChild(labelText);
+
+  return li;
 }
 
 /**
@@ -75,7 +136,7 @@ async function loadCurrentJobAnalysis() {
       return;
     }
 
-    // Vérifier si c'est un site supporté
+    // Verifier si c'est un site supporte
     const supportedSites = ['indeed.com', 'indeed.fr', 'linkedin.com', 'hellowork.com', 'hellowork.io', 'welcometothejungle.com'];
     const isSupported = supportedSites.some(site => tab.url.includes(site));
 
@@ -108,31 +169,25 @@ async function loadCurrentJobAnalysis() {
         // Afficher les red flags
         if (redFlags && redFlags.length > 0) {
           redflagsGroup.style.display = 'block';
-          redflagsList.innerHTML = '';
+          redflagsList.textContent = '';
           redFlags.forEach(flag => {
-            const li = document.createElement('li');
-            li.className = 'flag-item flag-item--red';
-            li.innerHTML = `<span class="flag-item__impact">${flag.impact > 0 ? '+' : ''}${flag.impact}</span> ${flag.label}`;
-            redflagsList.appendChild(li);
+            redflagsList.appendChild(createFlagItem(flag, true));
           });
         }
 
         // Afficher les green flags
         if (greenFlags && greenFlags.length > 0) {
           greenflagsGroup.style.display = 'block';
-          greenflagsList.innerHTML = '';
+          greenflagsList.textContent = '';
           greenFlags.forEach(flag => {
-            const li = document.createElement('li');
-            li.className = 'flag-item flag-item--green';
-            li.innerHTML = `<span class="flag-item__impact">+${flag.impact || flag.score || 0}</span> ${flag.label}`;
-            greenflagsList.appendChild(li);
+            greenflagsList.appendChild(createFlagItem(flag, false));
           });
         }
 
         // Si aucun flag
         if ((!redFlags || redFlags.length === 0) && (!greenFlags || greenFlags.length === 0)) {
           analysisEmpty.style.display = 'block';
-          analysisEmpty.textContent = 'Aucun flag détecté pour cette offre';
+          analysisEmpty.textContent = I18n.t('popup.noFlags');
         }
       } else {
         // Pas d'analyse disponible
@@ -140,7 +195,7 @@ async function loadCurrentJobAnalysis() {
         analysisScore.style.display = 'none';
       }
     } catch (err) {
-      // Content script non chargé ou pas de réponse
+      // Content script non charge ou pas de reponse
       analysisEmpty.style.display = 'block';
       analysisScore.style.display = 'none';
     }
@@ -150,7 +205,7 @@ async function loadCurrentJobAnalysis() {
 }
 
 /**
- * Configure les listeners pour les paramètres
+ * Configure les listeners pour les parametres
  */
 function setupSettingsListeners() {
   const settingsMap = {
@@ -166,9 +221,9 @@ function setupSettingsListeners() {
         const settings = result.settings || {};
         settings[settingKey] = e.target.checked;
         await chrome.storage.local.set({ settings });
-        
+
         // Feedback visuel
-        showFeedback('Paramètre enregistré ✓');
+        showFeedback(I18n.t('popup.settingSaved') + ' ✓');
       } catch (error) {
         console.error('Erreur lors de la sauvegarde:', error);
       }
@@ -177,21 +232,21 @@ function setupSettingsListeners() {
 }
 
 /**
- * Réinitialise les statistiques
+ * Reinitialise les statistiques
  */
 async function clearStats() {
   try {
     await chrome.storage.local.set({
       stats: { analyzed: 0, flagged: 0, critical: 0 }
     });
-    
+
     document.getElementById('stat-analyzed').textContent = '0';
     document.getElementById('stat-flagged').textContent = '0';
     document.getElementById('stat-critical').textContent = '0';
-    
-    showFeedback('Statistiques réinitialisées ✓');
+
+    showFeedback(I18n.t('popup.statsReset') + ' ✓');
   } catch (error) {
-    console.error('Erreur lors de la réinitialisation:', error);
+    console.error('Erreur lors de la reinitialisation:', error);
   }
 }
 
@@ -233,9 +288,9 @@ function showFeedback(message) {
     z-index: 1000;
     animation: fadeInUp 0.3s ease;
   `;
-  
+
   document.body.appendChild(feedback);
-  
+
   setTimeout(() => {
     feedback.style.opacity = '0';
     feedback.style.transform = 'translateX(-50%) translateY(10px)';
@@ -256,7 +311,7 @@ style.textContent = `
       transform: translateX(-50%) translateY(0);
     }
   }
-  
+
   .feedback {
     transition: all 0.3s ease;
   }

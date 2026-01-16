@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TrouverUnJob",
-  "version": "1.2.0",
-  "description": "Analysez les offres d'emploi, détectez les arnaques et évaluez les salaires du marché sur Indeed, LinkedIn, HelloWork et WTTJ. Compatible Chrome, Arc, Brave, Edge et tous navigateurs Chromium.",
+  "version": "1.4.0",
+  "description": "Détectez les arnaques et analysez les offres d'emploi sur Indeed, LinkedIn, HelloWork et WTTJ.",
   "minimum_chrome_version": "102",
   "permissions": [
     "activeTab",
@@ -37,14 +37,14 @@
         "*://*.indeed.com/*",
         "*://*.indeed.fr/*"
       ],
-      "js": ["content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/indeed.js"],
+      "js": ["content-scripts/shared/i18n-content.js", "content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/indeed.js"],
       "css": ["content-scripts/styles.css"]
     },
     {
       "matches": [
         "*://*.linkedin.com/jobs/*"
       ],
-      "js": ["content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/linkedin.js"],
+      "js": ["content-scripts/shared/i18n-content.js", "content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/linkedin.js"],
       "css": ["content-scripts/styles.css"]
     },
     {
@@ -52,19 +52,25 @@
         "*://*.hellowork.com/*",
         "*://*.hellowork.io/*"
       ],
-      "js": ["content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/hellowork.js"],
+      "js": ["content-scripts/shared/i18n-content.js", "content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/hellowork.js"],
       "css": ["content-scripts/styles.css"]
     },
     {
       "matches": [
         "*://*.welcometothejungle.com/*"
       ],
-      "js": ["content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/welcometothejungle.js"],
+      "js": ["content-scripts/shared/i18n-content.js", "content-scripts/shared/pertinence-analyzer.js", "content-scripts/shared/career-pathways.js", "content-scripts/welcometothejungle.js"],
       "css": ["content-scripts/styles.css"]
     }
   ],
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["locales/*.json", "locales/i18n.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

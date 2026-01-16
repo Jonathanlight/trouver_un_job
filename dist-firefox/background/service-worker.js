@@ -1,30 +1,104 @@
 /**
- * Background Script - TrouverUnJob (Firefox)
- * Gère la communication entre les content scripts et le popup
+ * Service Worker - Fake Job Detector
+ * Gere la communication entre les content scripts et le popup
  */
 
-// Polyfill pour compatibilité Chrome/Firefox
-const browserAPI = typeof browser !== 'undefined' ? browser : chrome;
-
-// État global de l'extension
+// Etat global de l'extension
 const state = {
   analyzedJobs: new Map(),
   settings: {
     autoAnalyze: true,
     showBadges: true,
     notifyHighRisk: true
-  }
+  },
+  translations: null,
+  currentLanguage: 'fr'
 };
 
-// Charger les paramètres au démarrage
-browserAPI.storage.local.get(['settings']).then((result) => {
+// Langues supportees
+const SUPPORTED_LANGUAGES = ['fr', 'en', 'it', 'de', 'es', 'zh'];
+const DEFAULT_LANGUAGE = 'fr';
+
+/**
+ * Charge les traductions pour le service worker
+ */
+async function loadTranslations(lang) {
+  try {
+    const url = chrome.runtime.getURL(`locales/${lang}.json`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to load ${lang}.json`);
+    state.translations = await response.json();
+    state.currentLanguage = lang;
+  } catch (error) {
+    console.error('[SW] Error loading translations:', error);
+    if (lang !== DEFAULT_LANGUAGE) {
+      await loadTranslations(DEFAULT_LANGUAGE);
+    }
+  }
+}
+
+/**
+ * Obtient une traduction
+ */
+function t(key, params = {}) {
+  if (!state.translations) return key;
+
+  const keys = key.split('.');
+  let value = state.translations;
+
+  for (const k of keys) {
+    if (value && typeof value === 'object' && k in value) {
+      value = value[k];
+    } else {
+      return key;
+    }
+  }
+
+  if (typeof value !== 'string') return key;
+
+  let result = value;
+  for (const [param, replacement] of Object.entries(params)) {
+    result = result.replace(new RegExp(`\\{${param}\\}`, 'g'), replacement);
+  }
+
+  return result;
+}
+
+/**
+ * Initialise le service worker
+ */
+async function init() {
+  // Charger les parametres
+  const result = await chrome.storage.local.get(['settings', 'language']);
+
   if (result.settings) {
     Object.assign(state.settings, result.settings);
   }
-}).catch(() => {});
 
-// Écouter les messages des content scripts
-browserAPI.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Charger la langue
+  let lang = result.language;
+  if (!lang || !SUPPORTED_LANGUAGES.includes(lang)) {
+    lang = DEFAULT_LANGUAGE;
+  }
+
+  await loadTranslations(lang);
+}
+
+// Initialiser au demarrage
+init();
+
+// Ecouter les changements de langue
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.language) {
+    const newLang = changes.language.newValue;
+    if (SUPPORTED_LANGUAGES.includes(newLang)) {
+      loadTranslations(newLang);
+    }
+  }
+});
+
+// Ecouter les messages des content scripts
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case 'ANALYZE_JOB':
       handleAnalyzeJob(message.data, sender.tab?.id)
@@ -43,7 +117,7 @@ browserAPI.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'UPDATE_SETTINGS':
       Object.assign(state.settings, message.settings);
-      browserAPI.storage.local.set({ settings: state.settings });
+      chrome.storage.local.set({ settings: state.settings });
       sendResponse({ success: true });
       return false;
 
@@ -52,17 +126,19 @@ browserAPI.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'CLEAR_STATS':
-      browserAPI.storage.local.set({ stats: { analyzed: 0, flagged: 0, critical: 0 } });
+      chrome.storage.local.set({ stats: { analyzed: 0, flagged: 0, critical: 0 } });
       sendResponse({ success: true });
       return false;
 
     case 'UPDATE_STATS':
+      // Mise a jour directe des stats depuis les content scripts avances
       updateStatsFromContentScript(message.data)
         .then(() => sendResponse({ success: true }))
         .catch(error => sendResponse({ error: error.message }));
       return true;
 
     case 'JOB_ANALYZED':
+      // Notification qu'une offre a ete analysee (pour mise a jour en temps reel)
       handleJobAnalyzedNotification(message.data, sender.tab?.id);
       sendResponse({ success: true });
       return false;
@@ -77,13 +153,11 @@ browserAPI.runtime.onMessage.addListener((message, sender, sendResponse) => {
  * Analyse une offre d'emploi
  */
 async function handleAnalyzeJob(jobData, tabId) {
-  const jobId = generateJobId(jobData);
+  const { JobAnalyzer } = await import('../src/analyzer/job-analyzer.js');
+  const analyzer = new JobAnalyzer();
 
-  // Analyse basique côté background
-  const analysis = {
-    score: 50,
-    riskLevel: { level: 'medium' }
-  };
+  const analysis = analyzer.analyze(jobData);
+  const jobId = generateJobId(jobData);
 
   // Stocker l'analyse
   state.analyzedJobs.set(jobId, {
@@ -92,19 +166,29 @@ async function handleAnalyzeJob(jobData, tabId) {
     analyzedAt: Date.now()
   });
 
-  // Mettre à jour les statistiques
+  // Mettre a jour les statistiques
   await updateStats(analysis);
 
-  // Mettre à jour le badge si nécessaire
+  // Mettre a jour le badge si necessaire
   if (state.settings.showBadges && tabId) {
     updateBadge(tabId, analysis.riskLevel.level);
+  }
+
+  // Notification pour les offres a haut risque
+  if (state.settings.notifyHighRisk && analysis.score >= 70) {
+    chrome.notifications?.create({
+      type: 'basic',
+      iconUrl: 'icons/icon48.png',
+      title: t('notifications.suspiciousTitle'),
+      message: t('notifications.suspiciousBody', { title: jobData.title })
+    });
   }
 
   return { jobId, analysis };
 }
 
 /**
- * Génère un ID unique pour une offre
+ * Genere un ID unique pour une offre
  */
 function generateJobId(jobData) {
   const str = `${jobData.title}-${jobData.company}-${jobData.url || ''}`;
@@ -118,29 +202,29 @@ function generateJobId(jobData) {
 }
 
 /**
- * Met à jour les statistiques
+ * Met a jour les statistiques
  */
 async function updateStats(analysis) {
-  const result = await browserAPI.storage.local.get(['stats']);
+  const result = await chrome.storage.local.get(['stats']);
   const stats = result.stats || { analyzed: 0, flagged: 0, critical: 0 };
 
   stats.analyzed++;
   if (analysis.score >= 30) stats.flagged++;
   if (analysis.score >= 70) stats.critical++;
 
-  await browserAPI.storage.local.set({ stats });
+  await chrome.storage.local.set({ stats });
 }
 
 /**
- * Récupère les statistiques
+ * Recupere les statistiques
  */
 async function getStats() {
-  const result = await browserAPI.storage.local.get(['stats']);
+  const result = await chrome.storage.local.get(['stats']);
   return result.stats || { analyzed: 0, flagged: 0, critical: 0 };
 }
 
 /**
- * Met à jour le badge de l'extension
+ * Met a jour le badge de l'extension
  */
 function updateBadge(tabId, riskLevel) {
   const badgeConfig = {
@@ -153,29 +237,29 @@ function updateBadge(tabId, riskLevel) {
 
   const config = badgeConfig[riskLevel] || badgeConfig.safe;
 
-  // Firefox MV2 utilise browserAction
-  browserAPI.browserAction.setBadgeText({ text: config.text, tabId });
-  browserAPI.browserAction.setBadgeBackgroundColor({ color: config.color, tabId });
+  chrome.action.setBadgeText({ text: config.text, tabId });
+  chrome.action.setBadgeBackgroundColor({ color: config.color, tabId });
 }
 
 /**
- * Mise à jour des stats depuis les content scripts
+ * Mise a jour des stats depuis les content scripts avances
  */
 async function updateStatsFromContentScript(data) {
-  const result = await browserAPI.storage.local.get(['stats']);
+  const result = await chrome.storage.local.get(['stats']);
   const stats = result.stats || { analyzed: 0, flagged: 0, critical: 0 };
 
   if (data.analyzed) stats.analyzed += data.analyzed;
   if (data.flagged) stats.flagged += data.flagged;
   if (data.critical) stats.critical += data.critical;
 
-  await browserAPI.storage.local.set({ stats });
+  await chrome.storage.local.set({ stats });
 }
 
 /**
- * Gère la notification d'une offre analysée
+ * Gere la notification d'une offre analysee
  */
 function handleJobAnalyzedNotification(data, tabId) {
+  // Mise a jour du badge si score eleve
   if (data.score >= 70 && tabId) {
     updateBadge(tabId, 'critical');
   } else if (data.score >= 50 && tabId) {
@@ -184,12 +268,13 @@ function handleJobAnalyzedNotification(data, tabId) {
     updateBadge(tabId, 'medium');
   }
 
+  // Notification pour offres critiques
   if (state.settings.notifyHighRisk && data.score >= 70 && data.title) {
-    browserAPI.notifications?.create({
+    chrome.notifications?.create({
       type: 'basic',
       iconUrl: 'icons/icon48.png',
-      title: 'Offre suspecte détectée',
-      message: `L'offre "${data.title}" présente de nombreux signaux d'alerte.`
+      title: t('notifications.criticalTitle'),
+      message: t('notifications.criticalBody', { title: data.title })
     });
   }
 }
@@ -204,4 +289,4 @@ setInterval(() => {
       state.analyzedJobs.delete(jobId);
     }
   }
-}, 60 * 60 * 1000);
+}, 60 * 60 * 1000); // Toutes les heures

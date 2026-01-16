@@ -15,6 +15,7 @@
 
   const Analyzer = window.FJD_PertinenceAnalyzer;
   const SalaryAnalyzer = window.FJD_SalaryMarketAnalyzer;
+  const t = (key, params) => window.FJD_I18n?.t(key, params) || key;
 
   const SELECTORS = {
     jobCards: '.jobs-search-results__list-item, .job-card-container, .scaffold-layout__list-item, .jobs-search-results-list__list-item, [data-job-id], .jobs-search-two-pane__job-card-container--viewport-tracking-0',
@@ -256,21 +257,57 @@
     createBadge(result) {
       const badge = document.createElement('div');
       const cls = result.classification;
+
+      // Déterminer le style forcé si offre saturée ou mauvaise
+      let badgeColor = cls.color;
+      let badgeBg = cls.bgColor;
+      let badgeLabel = cls.label;
+
+      // Forcer le style si offre marquée comme mauvaise (+80 candidats ou problèmes d'expérience)
+      if (result.forceStatus === 'danger' || result.isBadOffer) {
+        badgeColor = '#dc2626';
+        badgeBg = '#fee2e2';
+        badgeLabel = 'Mauvaise offre';
+      } else if (result.forceStatus === 'warning' || result.shouldShowWarning) {
+        if (result.pertinenceScore < 50) {
+          badgeColor = '#ea580c';
+          badgeBg = '#ffedd5';
+          badgeLabel = 'Offre douteuse';
+        }
+      }
+
       badge.className = 'fjd-badge';
       badge.style.cssText = `
         display: inline-flex; align-items: center; gap: 4px;
         padding: 5px 10px; border-radius: 16px; cursor: pointer;
         font-size: 11px; font-weight: 600; font-family: system-ui, sans-serif;
-        background: ${cls.bgColor}; color: ${cls.color};
-        border: 1px solid ${cls.color}40;
+        background: ${badgeBg}; color: ${badgeColor};
+        border: 1px solid ${badgeColor}40;
         box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         transition: all 0.2s ease; z-index: 100;
       `;
-      badge.innerHTML = `
-        <span>${cls.label}</span>
-        <span style="background: ${cls.color}25; padding: 2px 5px; border-radius: 8px; font-weight: 700;">${result.pertinenceScore}%</span>
-      `;
-      badge.title = 'Cliquez pour les détails';
+
+      // Créer les éléments du badge de manière sécurisée (sans innerHTML)
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = badgeLabel;
+
+      const scoreSpan = document.createElement('span');
+      scoreSpan.style.cssText = `background: ${badgeColor}25; padding: 2px 5px; border-radius: 8px; font-weight: 700;`;
+      scoreSpan.textContent = `${result.pertinenceScore}%`;
+
+      badge.appendChild(labelSpan);
+      badge.appendChild(scoreSpan);
+
+      // Ajouter indicateur nombre de candidats si offre saturée
+      const applicantInfo = result.platform?.applicantPenalty;
+      if (applicantInfo?.isBadOffer && result.platform?.applicantCount) {
+        const applicantSpan = document.createElement('span');
+        applicantSpan.style.cssText = 'margin-left: 2px; font-size: 9px; opacity: 0.9;';
+        applicantSpan.textContent = `${result.platform.applicantCount}+👥`;
+        badge.appendChild(applicantSpan);
+      }
+
+      badge.title = t('modal.clickForDetails');
       badge.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this.showPanel(result); });
       return badge;
     },
@@ -306,16 +343,16 @@
       const extra = result.linkedinData || {};
 
       const diplomaLabels = {
-        'cap_bep': 'CAP/BEP', 'bac': 'Bac', 'bac2': 'Bac+2',
-        'bac3': 'Bac+3', 'bac5': 'Bac+5', 'bac8': 'Doctorat'
+        'cap_bep': t('diploma.capBep'), 'bac': t('diploma.bac'), 'bac2': t('diploma.bac2'),
+        'bac3': t('diploma.bac3'), 'bac5': t('diploma.bac5'), 'bac8': t('diploma.bac8')
       };
 
       const remoteLabels = {
-        'complet': 'Télétravail complet',
-        'partiel': 'Hybride',
-        'occasionnel': 'Télétravail occasionnel',
-        'possible': 'Télétravail possible',
-        'presentiel': 'Sur site'
+        'complet': t('remote.full'),
+        'partiel': t('remote.hybrid'),
+        'occasionnel': t('remote.occasional'),
+        'possible': t('remote.possible'),
+        'presentiel': t('remote.onsite')
       };
 
       // Analyse des débouchés et reconversions
@@ -329,7 +366,7 @@
               <div id="fjd-panel-title" style="font-size: 28px; font-weight: 700; color: ${cls.color};" role="status" aria-live="polite">${result.pertinenceScore}%</div>
               <div style="font-size: 14px; color: ${cls.color}; font-weight: 500;">${cls.label}</div>
             </div>
-            <button class="fjd-close" aria-label="Fermer le panneau" style="background: none; border: none; font-size: 26px; cursor: pointer; color: #475569; padding: 8px; border-radius: 6px; transition: background 0.2s;">&times;</button>
+            <button class="fjd-close" aria-label="${t('modal.closePanel')}" style="background: none; border: none; font-size: 26px; cursor: pointer; color: #475569; padding: 8px; border-radius: 6px; transition: background 0.2s;">&times;</button>
           </div>
           ${result.jobTitle ? `
             <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid ${cls.color}25;">
@@ -340,34 +377,34 @@
         </header>
 
         <main style="padding: 18px 20px; overflow-y: auto; flex: 1; min-height: 0;">
-          <section aria-label="Analyse du profil" style="background: #f8fafc; border-radius: 8px; padding: 14px; margin-bottom: 18px;">
-            <h3 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 10px 0;">Analyse du profil</h3>
+          <section aria-label="${t('modal.profileAnalysis')}" style="background: #f8fafc; border-radius: 8px; padding: 14px; margin-bottom: 18px;">
+            <h3 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 10px 0;">${t('modal.profileAnalysis')}</h3>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
-              <div><span style="color: #64748b;">Diplôme:</span> <strong style="color: #1e293b;">${d.diploma ? diplomaLabels[d.diploma] : 'Non précisé'}</strong></div>
-              <div><span style="color: #64748b;">Expérience:</span> <strong style="color: #1e293b;">${d.experience !== null ? d.experience + ' an' + (d.experience > 1 ? 's' : '') : 'Non précisé'}</strong></div>
-              <div><span style="color: #64748b;">Contrat:</span> <strong style="color: #1e293b;">${extra.contractType || '-'}</strong></div>
-              <div><span style="color: #64748b;">Localisation:</span> <strong style="color: #1e293b;">${d.location || '-'}</strong></div>
+              <div><span style="color: #64748b;">${t('modal.diploma')}:</span> <strong style="color: #1e293b;">${d.diploma ? diplomaLabels[d.diploma] : t('modal.notSpecified')}</strong></div>
+              <div><span style="color: #64748b;">${t('modal.experience')}:</span> <strong style="color: #1e293b;">${d.experience !== null ? d.experience + ' ' + (d.experience > 1 ? t('modal.years') : t('modal.year')) : t('modal.notSpecified')}</strong></div>
+              <div><span style="color: #64748b;">${t('modal.contract')}:</span> <strong style="color: #1e293b;">${extra.contractType || '-'}</strong></div>
+              <div><span style="color: #64748b;">${t('modal.location')}:</span> <strong style="color: #1e293b;">${d.location || '-'}</strong></div>
             </div>
-            ${extra.remoteWork ? `<div style="margin-top: 8px;"><span style="color: #64748b; font-size: 13px;">Mode:</span> <strong style="color: #0d9488; font-size: 13px;">${remoteLabels[extra.remoteWork] || extra.remoteWork}</strong></div>` : ''}
-            ${extra.companySize ? `<div style="margin-top: 8px;"><span style="color: #64748b; font-size: 13px;">Taille:</span> <strong style="color: #1e293b; font-size: 13px;">${extra.companySize.toLocaleString()} collaborateurs</strong></div>` : ''}
-            ${extra.isAgency ? `<div role="status" style="margin-top: 8px; padding: 6px 10px; background: #fef3c7; border-radius: 4px; font-size: 12px; color: #92400e; font-weight: 500;">Cabinet de recrutement</div>` : ''}
+            ${extra.remoteWork ? `<div style="margin-top: 8px;"><span style="color: #64748b; font-size: 13px;">${t('modal.mode')}:</span> <strong style="color: #0d9488; font-size: 13px;">${remoteLabels[extra.remoteWork] || extra.remoteWork}</strong></div>` : ''}
+            ${extra.companySize ? `<div style="margin-top: 8px;"><span style="color: #64748b; font-size: 13px;">${t('modal.size')}:</span> <strong style="color: #1e293b; font-size: 13px;">${extra.companySize.toLocaleString()} ${t('modal.collaborators')}</strong></div>` : ''}
+            ${extra.isAgency ? `<div role="status" style="margin-top: 8px; padding: 6px 10px; background: #fef3c7; border-radius: 4px; font-size: 12px; color: #92400e; font-weight: 500;">${t('modal.recruitmentAgency')}</div>` : ''}
             ${d.salary ? `
               <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0;">
-                <span style="color: #64748b; font-size: 13px;">Salaire:</span>
+                <span style="color: #64748b; font-size: 13px;">${t('modal.salary')}:</span>
                 <strong style="color: #1e293b; font-size: 13px;">${Math.round(d.salary.min/1000)}k - ${Math.round(d.salary.max/1000)}k€/an</strong>
-                ${s.market.expected ? `<span style="color: #64748b; font-size: 12px;"> (attendu: ${Math.round(s.market.expected.min/1000)}k-${Math.round(s.market.expected.max/1000)}k€)</span>` : ''}
+                ${s.market.expected ? `<span style="color: #64748b; font-size: 12px;"> (${t('modal.expected')}: ${Math.round(s.market.expected.min/1000)}k-${Math.round(s.market.expected.max/1000)}k€)</span>` : ''}
               </div>
-            ` : '<div role="alert" style="margin-top: 10px; padding: 6px 10px; background: #fef2f2; border-radius: 4px; font-size: 12px; color: #dc2626; font-weight: 500;">Salaire non communiqué</div>'}
+            ` : `<div role="alert" style="margin-top: 10px; padding: 6px 10px; background: #fef2f2; border-radius: 4px; font-size: 12px; color: #dc2626; font-weight: 500;">${t('modal.salaryNotProvided')}</div>`}
           </section>
 
-          <section aria-label="Scores par critère" style="margin-bottom: 18px;">
-            <h3 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 12px 0;">Scores par critère</h3>
+          <section aria-label="${t('modal.criteriaScores')}" style="margin-bottom: 18px;">
+            <h3 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 12px 0;">${t('modal.criteriaScores')}</h3>
             ${[
-              { name: 'Légitimité', score: s.legitimacy.score, desc: 'Authenticité' },
-              { name: 'Marché', score: s.market.score, desc: 'Salaire vs marché' },
-              { name: 'Qualité', score: s.quality.score, desc: 'Rédaction' },
-              { name: 'Profil', score: s.profile.score, desc: 'Diplôme/exp' },
-              { name: 'Cohérence', score: s.coherence.score, desc: 'Logique' }
+              { name: t('modal.legitimacy'), score: s.legitimacy.score, desc: t('modal.authenticity') },
+              { name: t('modal.market'), score: s.market.score, desc: t('modal.salaryVsMarket') },
+              { name: t('modal.quality'), score: s.quality.score, desc: t('modal.writing') },
+              { name: t('modal.profile'), score: s.profile.score, desc: t('modal.diplomaExp') },
+              { name: t('modal.coherence'), score: s.coherence.score, desc: t('modal.logic') }
             ].map(item => {
               const col = item.score >= 70 ? '#16a34a' : item.score >= 50 ? '#ca8a04' : '#dc2626';
               return `
@@ -385,15 +422,15 @@
           </section>
 
           ${s.market.details.length > 0 ? `
-            <section aria-label="Analyse salariale" style="margin-bottom: 14px;">
-              <h4 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 8px 0;">Analyse salariale</h4>
+            <section aria-label="${t('modal.salaryAnalysis')}" style="margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #334155; margin: 0 0 8px 0;">${t('modal.salaryAnalysis')}</h4>
               <ul style="font-size: 13px; color: #64748b; margin: 0; padding-left: 18px; line-height: 1.6;">${s.market.details.map(det => `<li>${det}</li>`).join('')}</ul>
             </section>
           ` : ''}
 
           ${result.signals.greenFlags.length > 0 ? `
-            <section aria-label="Points positifs" style="background: #f0fdf4; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
-              <h4 style="font-size: 13px; font-weight: 600; color: #166534; margin: 0 0 8px 0;">Points positifs (${result.signals.greenFlags.length})</h4>
+            <section aria-label="${t('modal.positivePoints')}" style="background: #f0fdf4; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #166534; margin: 0 0 8px 0;">${t('modal.positivePoints')} (${result.signals.greenFlags.length})</h4>
               <div style="font-size: 13px; color: #15803d; line-height: 1.6;">
                 ${result.signals.greenFlags.slice(0, 6).map(f => `<span style="display: inline-block; background: #dcfce7; padding: 4px 8px; border-radius: 4px; margin: 3px 6px 3px 0;">${f.label}</span>`).join('')}
               </div>
@@ -401,30 +438,30 @@
           ` : ''}
 
           ${result.signals.redFlags.length > 0 ? `
-            <section aria-label="Alertes" role="alert" style="background: #fef2f2; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
-              <h4 style="font-size: 13px; font-weight: 600; color: #991b1b; margin: 0 0 8px 0;">Alertes (${result.signals.redFlags.length})</h4>
+            <section aria-label="${t('modal.alerts')}" role="alert" style="background: #fef2f2; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #991b1b; margin: 0 0 8px 0;">${t('modal.alerts')} (${result.signals.redFlags.length})</h4>
               <ul style="font-size: 13px; color: #dc2626; margin: 0; padding-left: 18px; line-height: 1.6;">${result.signals.redFlags.slice(0, 5).map(f => `<li>${f.label}</li>`).join('')}</ul>
             </section>
           ` : ''}
 
           ${result.signals.warnings.length > 0 ? `
-            <section aria-label="Points d'attention" style="background: #fffbeb; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
-              <h4 style="font-size: 13px; font-weight: 600; color: #92400e; margin: 0 0 8px 0;">Points d'attention</h4>
+            <section aria-label="${t('modal.attentionPoints')}" style="background: #fffbeb; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #92400e; margin: 0 0 8px 0;">${t('modal.attentionPoints')}</h4>
               <ul style="font-size: 13px; color: #b45309; margin: 0; padding-left: 18px; line-height: 1.6;">${result.signals.warnings.slice(0, 4).map(w => `<li>${w}</li>`).join('')}</ul>
             </section>
           ` : ''}
 
           ${result.recommendations.length > 0 ? `
-            <section aria-label="Recommandations" style="background: #eff6ff; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
-              <h4 style="font-size: 13px; font-weight: 600; color: #1e40af; margin: 0 0 8px 0;">Recommandations</h4>
+            <section aria-label="${t('modal.recommendations')}" style="background: #eff6ff; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+              <h4 style="font-size: 13px; font-weight: 600; color: #1e40af; margin: 0 0 8px 0;">${t('modal.recommendations')}</h4>
               <ul style="font-size: 13px; color: #2563eb; margin: 0; padding-left: 18px; line-height: 1.6;">${result.recommendations.map(r => `<li>${r}</li>`).join('')}</ul>
             </section>
           ` : ''}
 
           ${careerData.debouches && careerData.debouches.length > 0 ? `
-            <section aria-label="Évolutions de carrière" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-radius: 8px; padding: 14px; margin-bottom: 14px; border: 1px solid #a7f3d0;">
+            <section aria-label="${t('modal.careerEvolutions')}" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border-radius: 8px; padding: 14px; margin-bottom: 14px; border: 1px solid #a7f3d0;">
               <h4 style="font-size: 13px; font-weight: 600; color: #059669; margin: 0 0 10px 0;">
-                Évolutions de carrière possibles
+                ${t('modal.careerEvolutions')}
               </h4>
               <ul style="list-style: none; margin: 0; padding: 0; font-size: 13px; color: #047857;">
                 ${careerData.debouches.map(deb => `
@@ -438,9 +475,9 @@
           ` : ''}
 
           ${careerData.reconversion && careerData.reconversion.length > 0 ? `
-            <section aria-label="Pistes de reconversion" style="background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%); border-radius: 8px; padding: 14px; margin-bottom: 14px; border: 1px solid #c4b5fd;">
+            <section aria-label="${t('modal.reconversionPaths')}" style="background: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%); border-radius: 8px; padding: 14px; margin-bottom: 14px; border: 1px solid #c4b5fd;">
               <h4 style="font-size: 13px; font-weight: 600; color: #7c3aed; margin: 0 0 10px 0;">
-                Pistes de reconversion
+                ${t('modal.reconversionPaths')}
               </h4>
               <ul style="list-style: none; margin: 0; padding: 0; font-size: 13px; color: #6d28d9;">
                 ${careerData.reconversion.map(r => `
@@ -462,7 +499,7 @@
               font-size: 14px; font-weight: 600; cursor: pointer;
               transition: all 0.2s ease; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
             ">
-              Voir l'analyse salariale complète
+              ${t('modal.viewSalaryAnalysis')}
             </button>
           ` : ''}
         </main>
@@ -485,7 +522,7 @@
           const container = panel.querySelector('#fjd-salary-analysis-container');
           if (container.innerHTML) {
             container.innerHTML = '';
-            salaryToggle.textContent = '📊 Voir l\'analyse salariale complète';
+            salaryToggle.textContent = t('modal.viewSalaryAnalysis');
           } else {
             const avgSalary = Math.round((d.salary.min + d.salary.max) / 2);
             const analysis = SalaryAnalyzer.analyze({
@@ -496,7 +533,7 @@
               isCadre: true
             });
             container.innerHTML = SalaryAnalyzer.generateHTML(analysis);
-            salaryToggle.textContent = '📊 Masquer l\'analyse salariale';
+            salaryToggle.textContent = t('modal.hideSalaryAnalysis');
           }
         };
       }
@@ -563,7 +600,7 @@
         padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
         background: #fed7aa; color: #c2410c; border: 1px solid #fb923c;
       `;
-      marker.textContent = `🔄 Republiée`;
+      marker.textContent = `🔄 ${t('modal.reposted')}`;
       container.appendChild(marker);
     }
 
@@ -574,8 +611,35 @@
         padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
         background: #fef3c7; color: #b45309; border: 1px solid #fcd34d;
       `;
-      marker.textContent = `⚡ Incohérent`;
-      marker.title = result.entryLevelCheck.issues[0]?.label || 'Incohérence détectée';
+      marker.textContent = `⚡ ${t('modal.incoherent')}`;
+      marker.title = result.entryLevelCheck.issues[0]?.label || t('modal.incoherenceDetected');
+      container.appendChild(marker);
+    }
+
+    // Marqueur pour problèmes d'expérience
+    if (result.experienceAnalysis?.isProblematic) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fce7f3; color: #be185d; border: 1px solid #f9a8d4;
+      `;
+      marker.textContent = '📊 Exp. suspecte';
+      marker.title = result.experienceAnalysis.issues[0]?.label || 'Expérience demandée incohérente';
+      container.appendChild(marker);
+    }
+
+    // Marqueur pour offre saturée (+80 candidats)
+    if (result.platform?.applicantPenalty?.isBadOffer) {
+      const marker = document.createElement('span');
+      marker.style.cssText = `
+        display: inline-flex; align-items: center; gap: 2px;
+        padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
+        background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5;
+      `;
+      const count = result.platform?.applicantCount || '80+';
+      marker.textContent = `👥 ${count} candidats`;
+      marker.title = result.platform.applicantPenalty.label || 'Offre saturée';
       container.appendChild(marker);
     }
 

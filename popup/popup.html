@@ -14,79 +14,89 @@
         <span class="header__icon">💼</span>
         <h1 class="header__title">TrouverUnJob</h1>
       </div>
-      <span class="header__version">v1.2.0</span>
+      <div class="header__right">
+        <select id="language-selector" class="language-selector">
+          <option value="fr">🇫🇷 FR</option>
+          <option value="en">🇬🇧 EN</option>
+          <option value="it">🇮🇹 IT</option>
+          <option value="de">🇩🇪 DE</option>
+          <option value="es">🇪🇸 ES</option>
+          <option value="zh">🇨🇳 ZH</option>
+        </select>
+        <span class="header__version">v1.3.0</span>
+      </div>
     </header>
 
     <!-- Stats -->
     <section class="stats">
       <div class="stat">
         <span class="stat__value" id="stat-analyzed">0</span>
-        <span class="stat__label">Analysées</span>
+        <span class="stat__label" data-i18n="popup.analyzed">Analysees</span>
       </div>
       <div class="stat stat--warning">
         <span class="stat__value" id="stat-flagged">0</span>
-        <span class="stat__label">Suspectes</span>
+        <span class="stat__label" data-i18n="popup.suspicious">Suspectes</span>
       </div>
       <div class="stat stat--danger">
         <span class="stat__value" id="stat-critical">0</span>
-        <span class="stat__label">Critiques</span>
+        <span class="stat__label" data-i18n="popup.critical">Critiques</span>
       </div>
     </section>
 
     <!-- Status -->
     <section class="status" id="status-section">
       <div class="status__indicator status__indicator--active"></div>
-      <span class="status__text">Extension active</span>
+      <span class="status__text" data-i18n="popup.extensionActive">Extension active</span>
     </section>
 
     <!-- Current Job Analysis -->
     <section class="analysis" id="analysis-section" style="display: none;">
-      <h2 class="analysis__title">Analyse de l'offre actuelle</h2>
+      <h2 class="analysis__title" data-i18n="popup.currentAnalysis">Analyse de l'offre actuelle</h2>
       <div class="analysis__score" id="analysis-score">
         <span class="analysis__score-value">--</span>
-        <span class="analysis__score-label">Score</span>
+        <span class="analysis__score-label" data-i18n="popup.score">Score</span>
       </div>
       <div class="analysis__flags" id="analysis-flags">
         <div class="flags-group flags-group--red" id="redflags-group" style="display: none;">
-          <h3 class="flags-group__title">🚩 Red Flags</h3>
+          <h3 class="flags-group__title"><span>🚩</span> <span data-i18n="popup.redFlags">Red Flags</span></h3>
           <ul class="flags-list" id="redflags-list"></ul>
         </div>
         <div class="flags-group flags-group--green" id="greenflags-group" style="display: none;">
-          <h3 class="flags-group__title">✅ Green Flags</h3>
+          <h3 class="flags-group__title"><span>✅</span> <span data-i18n="popup.greenFlags">Green Flags</span></h3>
           <ul class="flags-list" id="greenflags-list"></ul>
         </div>
       </div>
-      <p class="analysis__empty" id="analysis-empty" style="display: none;">
+      <p class="analysis__empty" id="analysis-empty" style="display: none;" data-i18n="popup.navigateToJob">
         Naviguez vers une offre d'emploi pour voir l'analyse
       </p>
     </section>
 
     <!-- Settings -->
     <section class="settings">
-      <h2 class="settings__title">Paramètres</h2>
-      
+      <h2 class="settings__title" data-i18n="popup.settings">Parametres</h2>
+
       <label class="toggle">
         <input type="checkbox" id="setting-auto-analyze" checked>
         <span class="toggle__slider"></span>
-        <span class="toggle__label">Analyse automatique</span>
+        <span class="toggle__label" data-i18n="popup.autoAnalyze">Analyse automatique</span>
       </label>
 
       <label class="toggle">
         <input type="checkbox" id="setting-show-badges" checked>
         <span class="toggle__slider"></span>
-        <span class="toggle__label">Afficher les badges</span>
+        <span class="toggle__label" data-i18n="popup.showBadges">Afficher les badges</span>
       </label>
 
       <label class="toggle">
         <input type="checkbox" id="setting-notify">
         <span class="toggle__slider"></span>
-        <span class="toggle__label">Notifications pour offres critiques</span>
+        <span class="toggle__label" data-i18n="popup.notifications">Notifications pour offres critiques</span>
       </label>
     </section>
 
     <!-- Supported Sites -->
     <section class="sites">
-      <h2 class="sites__title">Sites supportés</h2>
+      <h2 class="sites__title" data-i18n="popup.supportedSites">Sites supportes</h2>
       <div class="sites__list">
         <div class="site">
           <span class="site__icon">💼</span>
@@ -114,19 +124,20 @@
     <!-- Actions -->
     <section class="actions">
       <button class="btn btn--secondary" id="btn-clear-stats">
-        🗑️ Réinitialiser les stats
+        <span>🗑️</span> <span data-i18n="popup.resetStats">Reinitialiser les stats</span>
       </button>
     </section>
 
     <!-- Footer -->
     <footer class="footer">
-      <p>Trouvez le job parfait, en toute sécurité</p>
+      <p data-i18n="popup.tagline">Trouvez le job parfait, en toute securite</p>
       <a href="https://paypal.me/jonathankbln" target="_blank" class="footer__donate">
-        ☕ Soutenir le projet
+        <span>☕</span> <span data-i18n="popup.support">Soutenir le projet</span>
       </a>
     </footer>
   </div>
 
+  <script src="../locales/i18n.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

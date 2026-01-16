@@ -54,20 +54,24 @@ const FJD_PertinenceAnalyzer = (function() {
   };
 
   // ============================================================================
-  // PÉNALITÉS NOMBRE DE CANDIDATS
+  // PÉNALITÉS NOMBRE DE CANDIDATS (CRITÈRES STRICTS)
   // ============================================================================
 
   const APPLICANT_PENALTIES = [
-    { threshold: 500, penalty: 45, label: "Ghost job très probable", level: "critical" },
-    { threshold: 300, penalty: 35, label: "Offre saturée", level: "high" },
-    { threshold: 200, penalty: 25, label: "Très forte concurrence", level: "high" },
-    { threshold: 100, penalty: 15, label: "Forte concurrence", level: "medium" },
-    { threshold: 50,  penalty: 8,  label: "Concurrence modérée", level: "low" }
+    { threshold: 500, penalty: 55, label: "Ghost job quasi-certain", level: "critical", status: "danger" },
+    { threshold: 300, penalty: 45, label: "Ghost job très probable", level: "critical", status: "danger" },
+    { threshold: 200, penalty: 38, label: "Offre probablement saturée", level: "high", status: "danger" },
+    { threshold: 150, penalty: 32, label: "Trop de candidats - mauvaise offre", level: "high", status: "danger" },
+    { threshold: 100, penalty: 28, label: "Concurrence excessive", level: "high", status: "warning" },
+    { threshold: 80,  penalty: 25, label: "Offre saturée (+80 candidats)", level: "high", status: "warning" },
+    { threshold: 60,  penalty: 18, label: "Forte concurrence", level: "medium", status: "warning" },
+    { threshold: 40,  penalty: 12, label: "Concurrence modérée", level: "medium", status: null },
+    { threshold: 25,  penalty: 5,  label: "Concurrence normale", level: "low", status: null }
   ];
 
   function calculateApplicantPenalty(applicantCount, platform = 'default') {
     if (applicantCount === null || applicantCount === undefined || applicantCount < 0) {
-      return { penalty: 0, label: null, level: null };
+      return { penalty: 0, label: null, level: null, status: null };
     }
 
     const platformMod = PLATFORM_MODIFIERS[platform] || PLATFORM_MODIFIERS.default;
@@ -79,20 +83,25 @@ const FJD_PertinenceAnalyzer = (function() {
           penalty: adjustedPenalty,
           label: `${applicantCount}+ candidats - ${tier.label}`,
           level: tier.level,
-          isGhostJob: tier.level === "critical"
+          status: tier.status,
+          isGhostJob: tier.level === "critical",
+          isBadOffer: tier.threshold >= 80  // Marquer comme mauvaise offre si >= 80 candidats
         };
       }
     }
 
-    // Moins de 50 candidats = légèrement positif
-    if (applicantCount < 10) {
-      return { penalty: -5, label: `${applicantCount} candidats - Faible concurrence`, level: "positive" };
+    // Moins de 25 candidats = positif
+    if (applicantCount < 5) {
+      return { penalty: -8, label: `${applicantCount} candidats - Excellente opportunité`, level: "excellent", status: null };
     }
-    if (applicantCount < 25) {
-      return { penalty: -2, label: `${applicantCount} candidats - Bonne opportunité`, level: "positive" };
+    if (applicantCount < 10) {
+      return { penalty: -5, label: `${applicantCount} candidats - Très bonne opportunité`, level: "positive", status: null };
+    }
+    if (applicantCount < 20) {
+      return { penalty: -3, label: `${applicantCount} candidats - Bonne opportunité`, level: "positive", status: null };
     }
 
-    return { penalty: 0, label: null, level: null };
+    return { penalty: 0, label: null, level: null, status: null };
   }
 
   // ============================================================================
@@ -239,6 +248,145 @@ const FJD_PertinenceAnalyzer = (function() {
       signals,
       isReposted,
       shouldWarn: totalPenalty >= 10
+    };
+  }
+
+  // ============================================================================
+  // ANALYSE RIGOUREUSE DES ANNÉES D'EXPÉRIENCE
+  // ============================================================================
+
+  const EXPERIENCE_ANALYSIS_CONFIG = {
+    // Seuils d'expérience excessive par type de poste
+    excessiveExperience: {
+      junior: { max: 2, warningAt: 1, penalty: 20, label: "Expérience excessive pour poste junior" },
+      confirmé: { max: 5, warningAt: 4, penalty: 15, label: "Expérience trop élevée pour confirmé" },
+      senior: { max: 10, warningAt: 8, penalty: 10, label: "Expérience senior exagérée" },
+      expert: { max: 15, warningAt: 12, penalty: 8, label: "Expérience expert extrême" }
+    },
+
+    // Titres de postes et expérience cohérente
+    positionExpectations: [
+      { pattern: /\b(stagiaire|stage|intern)\b/i, expectedExp: { min: 0, max: 0 }, penaltyPerYear: 25 },
+      { pattern: /\b(alternant|alternance|apprenti)\b/i, expectedExp: { min: 0, max: 1 }, penaltyPerYear: 20 },
+      { pattern: /\b(junior|débutant|entry.level|graduate|jeune.diplômé)\b/i, expectedExp: { min: 0, max: 2 }, penaltyPerYear: 15 },
+      { pattern: /\b(confirmé|intermédiaire|mid.level)\b/i, expectedExp: { min: 2, max: 5 }, penaltyPerYear: 8 },
+      { pattern: /\b(senior|expérimenté|experienced)\b/i, expectedExp: { min: 5, max: 10 }, penaltyPerYear: 5 },
+      { pattern: /\b(expert|staff|principal)\b/i, expectedExp: { min: 8, max: 15 }, penaltyPerYear: 3 },
+      { pattern: /\b(lead|manager|responsable|directeur|head)\b/i, expectedExp: { min: 7, max: 20 }, penaltyPerYear: 2 }
+    ],
+
+    // Expérience irréaliste par secteur (années max normales)
+    sectorMaxExperience: {
+      tech: 15,      // Tech évolue vite, +15 ans rare
+      finance: 25,
+      industrie: 30,
+      commerce: 20,
+      sante: 30,
+      default: 25
+    }
+  };
+
+  function analyzeExperienceRequirements(text, jobTitle, sector = 'default') {
+    const issues = [];
+    let totalPenalty = 0;
+    let detectedExperience = null;
+
+    // Extraire l'expérience demandée
+    const expPatterns = [
+      { pattern: /(\d{1,2})\s*[-àa]\s*(\d{1,2})\s*ans?\s*(?:d'?)?(?:expérience|exp\.?)/i, extract: (m) => ({ min: parseInt(m[1]), max: parseInt(m[2]) }) },
+      { pattern: /minimum\s*(\d{1,2})\s*ans?\s*(?:d'?)?(?:expérience|exp\.?)/i, extract: (m) => ({ min: parseInt(m[1]), max: parseInt(m[1]) + 3 }) },
+      { pattern: /(\d{1,2})\s*\+?\s*ans?\s*(?:d'?)?(?:expérience|exp\.?)\s*(?:minimum|requis|exigé)/i, extract: (m) => ({ min: parseInt(m[1]), max: parseInt(m[1]) + 3 }) },
+      { pattern: /au\s*moins\s*(\d{1,2})\s*ans?/i, extract: (m) => ({ min: parseInt(m[1]), max: parseInt(m[1]) + 3 }) },
+      { pattern: /(\d{1,2})\s*ans?\s*(?:d'?)?(?:expérience|exp\.?)/i, extract: (m) => ({ min: parseInt(m[1]), max: parseInt(m[1]) }) }
+    ];
+
+    for (const expPattern of expPatterns) {
+      const match = text.match(expPattern.pattern);
+      if (match) {
+        detectedExperience = expPattern.extract(match);
+        break;
+      }
+    }
+
+    if (!detectedExperience) {
+      return { penalty: 0, issues: [], detectedExperience: null, isProblematic: false };
+    }
+
+    const expYears = detectedExperience.max;
+    const fullText = `${jobTitle || ''} ${text}`.toLowerCase();
+
+    // 1. Vérifier si l'expérience est cohérente avec le titre du poste
+    for (const posConfig of EXPERIENCE_ANALYSIS_CONFIG.positionExpectations) {
+      if (posConfig.pattern.test(fullText)) {
+        if (expYears > posConfig.expectedExp.max) {
+          const excess = expYears - posConfig.expectedExp.max;
+          const penalty = Math.min(40, excess * posConfig.penaltyPerYear);
+          totalPenalty += penalty;
+          issues.push({
+            type: 'position_mismatch',
+            label: `${expYears} ans demandés pour un poste "${fullText.match(posConfig.pattern)?.[0]}" (max attendu: ${posConfig.expectedExp.max} ans)`,
+            penalty,
+            severity: penalty >= 25 ? 'critical' : (penalty >= 15 ? 'high' : 'medium')
+          });
+        }
+        break;
+      }
+    }
+
+    // 2. Vérifier si l'expérience est irréaliste pour le secteur
+    const maxSectorExp = EXPERIENCE_ANALYSIS_CONFIG.sectorMaxExperience[sector] || EXPERIENCE_ANALYSIS_CONFIG.sectorMaxExperience.default;
+    if (expYears > maxSectorExp) {
+      const penalty = 20;
+      totalPenalty += penalty;
+      issues.push({
+        type: 'unrealistic',
+        label: `${expYears} ans d'expérience demandés (irréaliste pour le secteur)`,
+        penalty,
+        severity: 'high'
+      });
+    }
+
+    // 3. Vérifier les demandes d'expérience excessive en général
+    if (expYears >= 10 && !/senior|expert|lead|manager|directeur|head|principal|staff/i.test(fullText)) {
+      const penalty = 15;
+      totalPenalty += penalty;
+      issues.push({
+        type: 'excessive',
+        label: `${expYears}+ ans demandés sans titre senior correspondant`,
+        penalty,
+        severity: 'medium'
+      });
+    }
+
+    // 4. Vérifier l'incohérence salaire/expérience (sera vérifié ailleurs mais flag ici)
+    if (expYears >= 7) {
+      // Ces postes devraient avoir un salaire élevé - ajout d'un flag
+      issues.push({
+        type: 'salary_check_needed',
+        label: `Vérifier que le salaire correspond à ${expYears} ans d'expérience`,
+        penalty: 0,
+        severity: 'info'
+      });
+    }
+
+    // 5. Demandes de compétences contradictoires avec l'expérience
+    if (expYears >= 5 && /formation\s*(interne|complète|assurée)|pas\s*de\s*prérequis|aucune\s*expérience/i.test(text)) {
+      const penalty = 18;
+      totalPenalty += penalty;
+      issues.push({
+        type: 'contradiction',
+        label: `Demande ${expYears} ans d'exp mais propose formation complète - incohérent`,
+        penalty,
+        severity: 'high'
+      });
+    }
+
+    return {
+      penalty: totalPenalty,
+      issues,
+      detectedExperience,
+      isProblematic: totalPenalty >= 15,
+      shouldMarkAsBad: totalPenalty >= 25  // Marquer l'offre comme mauvaise si trop de problèmes d'expérience
     };
   }
 
@@ -486,49 +634,82 @@ const FJD_PertinenceAnalyzer = (function() {
   const PATTERNS = {
     redFlags: {
       critical: [
-        { pattern: /paiement\s*(requis|nécessaire|obligatoire)/i, impact: -40, label: "Paiement requis" },
-        { pattern: /frais\s*(de\s*)?(inscription|formation|dossier)/i, impact: -40, label: "Frais demandés" },
-        { pattern: /investissement\s*(initial|de\s*départ)/i, impact: -40, label: "Investissement demandé" },
-        { pattern: /acheter?\s*(le\s*)?(kit|stock|matériel)/i, impact: -35, label: "Achat obligatoire" },
-        { pattern: /gagn(er|ez)\s*(jusqu'?à\s*)?\d{4,}\s*€?\s*(par|\/)\s*(jour|semaine)/i, impact: -35, label: "Gains irréalistes" },
-        { pattern: /devenez?\s*(riche|millionnaire)/i, impact: -40, label: "Promesse enrichissement" },
-        { pattern: /pas\s*(d'?|de\s*)entretien/i, impact: -30, label: "Sans entretien" },
-        { pattern: /parrain(age|er)|filleul|mlm|marketing\s*(de\s*)?réseau/i, impact: -35, label: "Structure MLM" }
+        { pattern: /paiement\s*(requis|nécessaire|obligatoire)/i, impact: -45, label: "Paiement requis - ARNAQUE" },
+        { pattern: /frais\s*(de\s*)?(inscription|formation|dossier)/i, impact: -45, label: "Frais demandés - ARNAQUE" },
+        { pattern: /investissement\s*(initial|de\s*départ)/i, impact: -45, label: "Investissement demandé - ARNAQUE" },
+        { pattern: /acheter?\s*(le\s*)?(kit|stock|matériel)/i, impact: -40, label: "Achat obligatoire - MLM/Arnaque" },
+        { pattern: /gagn(er|ez)\s*(jusqu'?à\s*)?\d{4,}\s*€?\s*(par|\/)\s*(jour|semaine)/i, impact: -40, label: "Gains irréalistes - Scam" },
+        { pattern: /devenez?\s*(riche|millionnaire)/i, impact: -45, label: "Promesse enrichissement - Arnaque" },
+        { pattern: /pas\s*(d'?|de\s*)entretien/i, impact: -35, label: "Sans entretien - Très suspect" },
+        { pattern: /parrain(age|er)|filleul|mlm|marketing\s*(de\s*)?réseau/i, impact: -40, label: "Structure MLM détectée" },
+        { pattern: /travail\s*(à\s*)?domicile.*\d{3,}\s*€\s*(par|\/)\s*jour/i, impact: -40, label: "Télétravail + gains élevés - Arnaque" }
       ],
       high: [
-        { pattern: /revenu\s*(passif|illimité|garanti)/i, impact: -25, label: "Revenu garanti" },
-        { pattern: /sans\s*(effort|travail|compétence)/i, impact: -25, label: "Sans effort" },
-        { pattern: /embauche\s*(immédiate|garantie)/i, impact: -20, label: "Embauche immédiate" },
-        { pattern: /whatsapp|telegram\s*(pour|uniquement)/i, impact: -20, label: "Contact messagerie" },
-        { pattern: /crypto|bitcoin|nft|forex/i, impact: -20, label: "Crypto suspect" }
+        { pattern: /revenu\s*(passif|illimité|garanti)/i, impact: -30, label: "Revenu garanti - Suspect" },
+        { pattern: /sans\s*(effort|travail|compétence)/i, impact: -30, label: "Sans effort - Irréaliste" },
+        { pattern: /embauche\s*(immédiate|garantie)/i, impact: -25, label: "Embauche garantie - Méfiance" },
+        { pattern: /whatsapp|telegram\s*(pour|uniquement)/i, impact: -25, label: "Contact messagerie uniquement" },
+        { pattern: /crypto|bitcoin|nft|forex\s*(trad|invest)/i, impact: -28, label: "Crypto/Trading suspect" },
+        { pattern: /commission\s*(attractive|illimitée|sans\s*plafond)/i, impact: -22, label: "Commission sans plafond - MLM?" },
+        { pattern: /recrutez?\s*(des?\s*)?(membres?|personnes?|candidats?)/i, impact: -25, label: "Recrutement de membres - Pyramidal" },
+        { pattern: /formation\s*(payante|à\s*vos?\s*frais)/i, impact: -30, label: "Formation payante par le candidat" },
+        { pattern: /opportunité\s*(exceptionnelle|unique|à\s*ne\s*pas\s*manquer)/i, impact: -18, label: "Formule marketing agressive" },
+        { pattern: /indépendant.*commission|commission.*indépendant/i, impact: -20, label: "Indépendant à commission - Méfiance" }
       ],
       medium: [
-        { pattern: /@(gmail|yahoo|hotmail|outlook)\.(com|fr)/i, impact: -10, label: "Email personnel" },
-        { pattern: /urgent\s*!|!!!+/i, impact: -8, label: "Urgence excessive" },
-        { pattern: /vivier|constitution\s*(de\s*)?base/i, impact: -12, label: "Constitution vivier" }
+        { pattern: /@(gmail|yahoo|hotmail|outlook|live)\.(com|fr)/i, impact: -12, label: "Email personnel non pro" },
+        { pattern: /urgent\s*!+|!!!+|\?\?\?+/i, impact: -10, label: "Ponctuation excessive" },
+        { pattern: /vivier|constitution\s*(de\s*)?base/i, impact: -15, label: "Constitution de vivier" },
+        { pattern: /entreprise\s*confidentielle|client\s*confidentiel/i, impact: -15, label: "Entreprise cachée" },
+        { pattern: /salaire\s*(motivant|attractif|intéressant)\s*$/i, impact: -12, label: "Salaire non précisé (vague)" },
+        { pattern: /selon\s*(profil|expérience)\s*$/i, impact: -8, label: "Salaire non communiqué" },
+        { pattern: /nombreuses?\s*missions?|plusieurs\s*postes?/i, impact: -10, label: "Offre groupée - Vivier" },
+        { pattern: /flexibilité\s*horaire\s*totale/i, impact: -8, label: "Horaires très flexibles - Vérifier" },
+        { pattern: /disponibilité\s*(immédiate|dès\s*maintenant)\s*impérative/i, impact: -8, label: "Urgence suspecte" },
+        { pattern: /revenus?\s*(complémentaires?|supplémentaires?)/i, impact: -10, label: "Revenus complémentaires - Vérifier" }
+      ],
+      low: [
+        { pattern: /poste\s*à\s*pourvoir\s*rapidement/i, impact: -5, label: "Poste urgent" },
+        { pattern: /profil\s*atypique\s*accepté/i, impact: -5, label: "Profil atypique accepté" },
+        { pattern: /formation\s*assurée/i, impact: -3, label: "Formation assurée - Vérifier contrat" }
       ]
     },
 
     greenFlags: {
       high: [
-        { pattern: /convention\s*collective|ccn\s*\d+/i, impact: 12, label: "Convention collective" },
-        { pattern: /n°?\s*siret|siret\s*:\s*\d/i, impact: 10, label: "SIRET" },
-        { pattern: /processus\s*(de\s*)?recrutement/i, impact: 10, label: "Processus décrit" }
+        { pattern: /convention\s*collective|ccn\s*\d+/i, impact: 15, label: "Convention collective mentionnée" },
+        { pattern: /n°?\s*siret\s*:?\s*\d{9,14}|siret\s*:?\s*\d{9,14}/i, impact: 15, label: "SIRET complet fourni" },
+        { pattern: /processus\s*(de\s*)?recrutement.*\d+\s*(étapes?|entretiens?)/i, impact: 12, label: "Processus recrutement détaillé" },
+        { pattern: /rcs\s+[a-z]+\s*\d+/i, impact: 14, label: "RCS mentionné" },
+        { pattern: /coté(e)?\s+(en\s+)?bourse|cac\s*40|sbf|euronext/i, impact: 15, label: "Société cotée en bourse" },
+        { pattern: /\d{3,}\s*(collaborateurs?|salariés?|employés?)/i, impact: 10, label: "Effectif > 100 personnes" },
+        { pattern: /créée?\s*(en\s*)?(19|20)\d{2}/i, impact: 8, label: "Ancienneté de l'entreprise" },
+        { pattern: /grille\s*salariale|salaire\s*:\s*\d+\s*k?€?\s*[-àa]\s*\d+/i, impact: 12, label: "Salaire transparent" }
       ],
       medium: [
-        { pattern: /cdi\s*(temps\s*plein)?/i, impact: 8, label: "CDI" },
-        { pattern: /mutuelle|complémentaire\s*santé/i, impact: 6, label: "Mutuelle" },
-        { pattern: /tickets?\s*restaurant|carte\s*resto/i, impact: 5, label: "Tickets resto" },
-        { pattern: /13(ème|e)\s*mois/i, impact: 7, label: "13ème mois" },
-        { pattern: /rtt/i, impact: 5, label: "RTT" },
-        { pattern: /participation|intéressement/i, impact: 6, label: "Participation" },
-        { pattern: /comité\s*(d'?)?entreprise|ce\b|cse\b/i, impact: 4, label: "CE/CSE" },
-        { pattern: /compte\s*épargne/i, impact: 4, label: "CET" },
-        { pattern: /formation\s*(interne|continue|sur\s*place)/i, impact: 5, label: "Formation" }
+        { pattern: /cdi\s*(temps\s*plein)?/i, impact: 10, label: "CDI temps plein" },
+        { pattern: /mutuelle\s*(100%|prise\s*en\s*charge|familiale)/i, impact: 8, label: "Mutuelle avantageuse" },
+        { pattern: /mutuelle|complémentaire\s*santé/i, impact: 5, label: "Mutuelle" },
+        { pattern: /tickets?\s*restaurant|carte\s*(déjeuner|resto)/i, impact: 5, label: "Tickets restaurant" },
+        { pattern: /13(ème|e)\s*mois/i, impact: 8, label: "13ème mois" },
+        { pattern: /14(ème|e)\s*mois/i, impact: 10, label: "14ème mois" },
+        { pattern: /rtt/i, impact: 6, label: "RTT" },
+        { pattern: /participation|intéressement/i, impact: 7, label: "Participation/Intéressement" },
+        { pattern: /prime\s*(annuelle|objectifs?|performance)/i, impact: 6, label: "Primes sur objectifs" },
+        { pattern: /comité\s*(d'?)?entreprise|ce\b|cse\b/i, impact: 5, label: "CE/CSE" },
+        { pattern: /compte\s*épargne\s*temps|cet\b/i, impact: 5, label: "Compte épargne temps" },
+        { pattern: /formation\s*(continue|certifiante|diplômante)/i, impact: 7, label: "Formation qualifiante" },
+        { pattern: /plan\s*(de\s*)?(carrière|évolution)/i, impact: 6, label: "Plan de carrière" },
+        { pattern: /certifi(é|cation)\s*(iso|afnor|b\s*corp|qualiopi)/i, impact: 8, label: "Entreprise certifiée" },
+        { pattern: /label\s*(diversité|égalité|responsable)/i, impact: 6, label: "Label responsabilité" }
       ],
       low: [
-        { pattern: /télétravail/i, impact: 3, label: "Télétravail" },
-        { pattern: /équipe\s*(dynamique|soudée)/i, impact: 2, label: "Équipe" }
+        { pattern: /télétravail\s*(hybride|partiel|\d+\s*jours?)/i, impact: 5, label: "Télétravail encadré" },
+        { pattern: /télétravail/i, impact: 3, label: "Télétravail possible" },
+        { pattern: /équipe\s*(de\s*)?\d+\s*personnes?/i, impact: 3, label: "Taille équipe précisée" },
+        { pattern: /locaux\s*(neufs|modernes|spacieux)/i, impact: 2, label: "Locaux de qualité" },
+        { pattern: /parking|place\s*de\s*stationnement/i, impact: 2, label: "Parking" },
+        { pattern: /transport\s*(en\s*commun|pris\s*en\s*charge)/i, impact: 3, label: "Transport pris en charge" }
       ]
     },
 
@@ -557,15 +738,18 @@ const FJD_PertinenceAnalyzer = (function() {
   // ============================================================================
 
   const CLASSIFICATIONS = {
+    // Bonnes offres (>= 50%) - Couleurs vertes
     EXCELLENT: { code: 'EXCELLENT', label: 'Excellente', color: '#059669', bgColor: '#d1fae5', minScore: 85 },
     TRES_BONNE: { code: 'TRES_BONNE', label: 'Très bonne', color: '#16a34a', bgColor: '#dcfce7', minScore: 75 },
     BONNE: { code: 'BONNE', label: 'Bonne', color: '#65a30d', bgColor: '#ecfccb', minScore: 65 },
-    CORRECTE: { code: 'CORRECTE', label: 'Correcte', color: '#0d9488', bgColor: '#ccfbf1', minScore: 55 },
-    PASSABLE: { code: 'PASSABLE', label: 'Passable', color: '#ca8a04', bgColor: '#fef9c3', minScore: 45 },
-    MEDIOCRE: { code: 'MEDIOCRE', label: 'Médiocre', color: '#d97706', bgColor: '#fef3c7', minScore: 35 },
-    MAUVAISE: { code: 'MAUVAISE', label: 'Mauvaise', color: '#ea580c', bgColor: '#ffedd5', minScore: 25 },
-    A_EVITER: { code: 'A_EVITER', label: 'À éviter', color: '#dc2626', bgColor: '#fee2e2', minScore: 15 },
-    DANGEREUSE: { code: 'DANGEREUSE', label: 'Dangereuse', color: '#991b1b', bgColor: '#fecaca', minScore: 0 }
+    CORRECTE: { code: 'CORRECTE', label: 'Correcte', color: '#0d9488', bgColor: '#ccfbf1', minScore: 50 },
+
+    // Offres moyennes/mauvaises (< 50%) - Couleurs ROUGES
+    PASSABLE: { code: 'PASSABLE', label: 'Moyenne', color: '#dc2626', bgColor: '#fee2e2', minScore: 40 },
+    MEDIOCRE: { code: 'MEDIOCRE', label: 'Médiocre', color: '#b91c1c', bgColor: '#fecaca', minScore: 30 },
+    MAUVAISE: { code: 'MAUVAISE', label: 'Mauvaise', color: '#991b1b', bgColor: '#fca5a5', minScore: 20 },
+    A_EVITER: { code: 'A_EVITER', label: 'À éviter', color: '#7f1d1d', bgColor: '#f87171', minScore: 10 },
+    DANGEREUSE: { code: 'DANGEREUSE', label: 'Dangereuse', color: '#450a0a', bgColor: '#ef4444', minScore: 0 }
   };
 
   // ============================================================================
@@ -1091,6 +1275,9 @@ const FJD_PertinenceAnalyzer = (function() {
         salary: context.salary || null
       });
 
+      // Analyse rigoureuse des années d'expérience
+      const experienceAnalysis = analyzeExperienceRequirements(text, jobData.title, sector);
+
       // Appliquer le multiplicateur de red flags pour la plateforme
       const adjustedLegitimacyScore = Math.max(0, Math.min(100,
         legitimacy.score - (legitimacy.redFlags.length * (platformMod.redFlagMultiplier - 1) * 5)
@@ -1121,11 +1308,20 @@ const FJD_PertinenceAnalyzer = (function() {
       // Appliquer la pénalité incohérences junior/stage/alternance
       pertinenceScore = pertinenceScore - entryLevelCheck.penalty;
 
+      // Appliquer la pénalité d'analyse d'expérience
+      pertinenceScore = pertinenceScore - experienceAnalysis.penalty;
+
       // Borner le score final
       pertinenceScore = Math.max(0, Math.min(100, pertinenceScore));
 
-      // Déterminer si l'offre doit être affichée en orange (warning)
-      const shouldShowWarning = repostedCheck.shouldWarn || entryLevelCheck.shouldWarn || applicantPenalty.level === 'medium';
+      // Déterminer si l'offre doit être affichée en orange (warning) ou rouge (danger)
+      const shouldShowWarning = repostedCheck.shouldWarn || entryLevelCheck.shouldWarn || applicantPenalty.level === 'medium' || experienceAnalysis.isProblematic;
+
+      // Marquer comme mauvaise offre si critères stricts déclenchés
+      const isBadOffer = applicantPenalty.isBadOffer || experienceAnalysis.shouldMarkAsBad || applicantPenalty.status === 'danger';
+
+      // Déterminer le statut forcé si offre est saturée (+80 candidats)
+      const forceStatus = applicantPenalty.status || (experienceAnalysis.shouldMarkAsBad ? 'warning' : null);
 
       const classification = determineClassification(pertinenceScore, legitimacy.hasCriticalFlags || applicantPenalty.isGhostJob);
       const recommendations = generateRecommendations(classification, { legitimacy, market, quality, profile, coherence });
@@ -1198,10 +1394,23 @@ const FJD_PertinenceAnalyzer = (function() {
         }
       }
 
+      // Ajouter les problèmes d'expérience aux red flags
+      for (const issue of experienceAnalysis.issues) {
+        if (issue.severity !== 'info' && issue.penalty > 0) {
+          enhancedRedFlags.push({
+            label: issue.label,
+            impact: -issue.penalty,
+            severity: issue.severity
+          });
+        }
+      }
+
       return {
         pertinenceScore,
         classification,
         shouldShowWarning,  // Pour affichage orange
+        isBadOffer,         // Offre marquée comme mauvaise (critères stricts)
+        forceStatus,        // Statut forcé ('danger' ou 'warning') si offre saturée
 
         // Détections
         detected: { diploma, experience, sector, location: location.name, salary },
@@ -1218,8 +1427,9 @@ const FJD_PertinenceAnalyzer = (function() {
         companyVerification,
 
         // Vérifications spéciales
-        repostedCheck,      // Offre republiée
-        entryLevelCheck,    // Incohérences junior/stage/alternance
+        repostedCheck,        // Offre republiée
+        entryLevelCheck,      // Incohérences junior/stage/alternance
+        experienceAnalysis,   // Analyse rigoureuse expérience
 
         // Scores détaillés
         scores: {

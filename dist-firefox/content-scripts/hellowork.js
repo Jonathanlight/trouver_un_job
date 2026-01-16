@@ -15,6 +15,7 @@
 
   const Analyzer = window.FJD_PertinenceAnalyzer;
   const SalaryAnalyzer = window.FJD_SalaryMarketAnalyzer;
+  const t = (key, params) => window.FJD_I18n?.t(key, params) || key;
 
   // ============================================================================
   // RED FLAGS SPÉCIFIQUES HELLOWORK
@@ -403,7 +404,7 @@
         padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
         background: #fed7aa; color: #c2410c; border: 1px solid #fb923c;
       `;
-      marker.textContent = `🔄 Republiée`;
+      marker.textContent = `🔄 ${t('modal.reposted')}`;
       container.appendChild(marker);
     }
 
@@ -414,8 +415,8 @@
         padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: 600;
         background: #fef3c7; color: #b45309; border: 1px solid #fcd34d;
       `;
-      marker.textContent = `⚡ Incohérent`;
-      marker.title = result.entryLevelCheck.issues[0]?.label || 'Incohérence détectée';
+      marker.textContent = `⚡ ${t('modal.incoherent')}`;
+      marker.title = result.entryLevelCheck.issues[0]?.label || t('modal.incoherenceDetected');
       container.appendChild(marker);
     }
 
@@ -447,7 +448,7 @@
         <span>${cls.label}</span>
         <span style="background: ${cls.color}25; padding: 2px 5px; border-radius: 8px; font-weight: 700;">${result.pertinenceScore}%</span>
       `;
-      badge.title = 'Cliquez pour les détails';
+      badge.title = t('modal.clickForDetails');
       badge.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); this.showPanel(result); });
       return badge;
     },
@@ -483,15 +484,15 @@
       const hw = result.helloworkData || {};
 
       const diplomaLabels = {
-        'cap_bep': 'CAP/BEP', 'bac': 'Bac', 'bac2': 'Bac+2',
-        'bac3': 'Bac+3', 'bac5': 'Bac+5', 'bac8': 'Doctorat'
+        'cap_bep': t('diploma.capBep'), 'bac': t('diploma.bac'), 'bac2': t('diploma.bac2'),
+        'bac3': t('diploma.bac3'), 'bac5': t('diploma.bac5'), 'bac8': t('diploma.bac8')
       };
 
       const remoteLabels = {
-        'complet': 'Télétravail complet',
-        'partiel': 'Télétravail partiel',
-        'occasionnel': 'Télétravail occasionnel',
-        'possible': 'Télétravail possible'
+        'complet': t('remote.full'),
+        'partiel': t('remote.partial'),
+        'occasionnel': t('remote.occasional'),
+        'possible': t('remote.possible')
       };
 
       // Analyse des débouchés et reconversions
@@ -660,7 +661,7 @@
           const container = panel.querySelector('#fjd-salary-analysis-container');
           if (container.innerHTML) {
             container.innerHTML = '';
-            salaryToggle.textContent = '📊 Voir l\'analyse salariale complète';
+            salaryToggle.textContent = t('modal.viewSalaryAnalysis');
           } else {
             const avgSalary = Math.round((d.salary.min + d.salary.max) / 2);
             const analysis = SalaryAnalyzer.analyze({
@@ -671,7 +672,7 @@
               isCadre: true
             });
             container.innerHTML = SalaryAnalyzer.generateHTML(analysis);
-            salaryToggle.textContent = '📊 Masquer l\'analyse salariale';
+            salaryToggle.textContent = t('modal.hideSalaryAnalysis');
           }
         };
       }
